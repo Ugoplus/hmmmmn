@@ -1,0 +1,286 @@
+const { Worker } = require('bullmq');
+const axios = require('axios');
+const Redis = require('ioredis');
+const config = require('../config');
+const logger = require('../utils/logger');
+
+const connection = new Redis({
+  host: config.get('redis.host'),
+  port: config.get('redis.port'),
+  password: config.get('redis.password'),
+  maxRetriesPerRequest: null
+});
+async function mistralChat(messages) {
+  try {
+    const response = await axios.post(
+      'https://api.mistral.ai/v1/chat/completions',
+      {
+        model: 'mistral-small-latest',
+        messages: messages,
+        temperature: 0.1,
+        max_tokens: 1000,
+        stream: false  // Add this
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${config.get('openai.key')}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data.choices[0].message.content;
+  } catch (error) {
+    console.log('Mistral API Error Details:', {
+      status: error.response?.status,
+      data: error.response?.data,
+      message: error.message
+    });
+    
+    // Return a fallback response so the bot still works
+    return 'Hello! I\'m having trouble with my AI service right now, but I\'m still here to help. Please try again.';
+  }
+}
+
+function tryParseJSON(raw, fallback = {}) {
+  try {
+    // Remove markdown code blocks if present
+    let cleanedRaw = raw.trim();
+    
+    // Remove ```json and ``` markers
+    if (cleanedRaw.startsWith('```json')) {
+      cleanedRaw = cleanedRaw.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (cleanedRaw.startsWith('```')) {
+      cleanedRaw = cleanedRaw.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+    
+    return JSON.parse(cleanedRaw.trim());
+  } catch (err) {
+    logger.error('Failed to parse JSON:', { raw, cleanedRaw, error: err.message });
+    return fallback;
+  }
+}
+
+// Extract job numbers from text like "apply 1,3,5" or "apply to jobs 2 and 4"
+function extractJobNumbers(text) {
+  const numbers = [];
+  
+  // Match patterns like "1,2,3" or "1, 2, 3"
+  const commaPattern = text.match(/\b(\d+)(?:\s*,\s*(\d+))*\b/g);
+  if (commaPattern) {
+    commaPattern.forEach(match => {
+      const nums = match.split(',').map(n => parseInt(n.trim())).filter(n => n > 0 && n <= 10);
+      numbers.push(...nums);
+    });
+  }
+  
+  // Match patterns like "job 2" or "jobs 1 and 3"
+  const jobPattern = text.match(/\bjobs?\s+(\d+)(?:\s+and\s+(\d+))*\b/gi);
+  if (jobPattern) {
+    jobPattern.forEach(match => {
+      const nums = match.match(/\d+/g).map(n => parseInt(n)).filter(n => n > 0 && n <= 10);
+      numbers.push(...nums);
+    });
+  }
+  
+  // Match "first 3" or "last 2"
+  const rangePattern = text.match(/\b(?:first|last)\s+(\d+)\b/i);
+  if (rangePattern) {
+    const count = parseInt(rangePattern[1]);
+    if (count > 0 && count <= 10) {
+      if (text.toLowerCase().includes('first')) {
+        for (let i = 1; i <= count; i++) {
+          numbers.push(i);
+        }
+      }
+    }
+  }
+  
+  // Remove duplicates and sort
+  return [...new Set(numbers)].sort((a, b) => a - b);
+}
+
+const worker = new Worker(
+  'openai-tasks',
+  async (job) => {
+    logger.info(`Running job ${job.name} [${job.id}]`);
+
+try {
+  if (job.name === 'parse-query') {
+    console.log('DEBUG: job.data:', JSON.stringify(job.data, null, 2));
+    console.log('DEBUG: job.data.message:', job.data.message);
+    
+    const message = job.data.message ? job.data.message.toLowerCase() : '';
+    
+         // Check for job application intent first
+        if (message.includes('apply')) {
+          if (message.includes('all')) {
+            return {
+              action: 'apply_job',
+              applyAll: true,
+              jobNumbers: null,
+              response: 'Applying to all jobs from your last search.'
+            };
+          }
+          
+          // Extract job numbers
+          const jobNumbers = extractJobNumbers(job.data.message);
+          if (jobNumbers.length > 0) {
+            return {
+              action: 'apply_job',
+              applyAll: false,
+              jobNumbers: jobNumbers,
+              response: `Applying to job(s) ${jobNumbers.join(', ')}.`
+            };
+          }
+          
+          // Generic apply without specific jobs
+          return {
+            action: 'apply_job',
+            applyAll: false,
+            jobNumbers: null,
+            response: 'Please specify which jobs to apply to, e.g., "apply 1,3,5" or "apply all".'
+          };
+        }
+        
+        // Use AI for more complex job search queries
+        const prompt = [
+          { 
+            role: 'system', 
+            content: `You are a job search assistant. Parse user queries and return JSON in this exact format:
+            {
+              "action": "search_jobs" | "apply_job" | "unknown",
+              "filters": {
+                "title": "job title or null",
+                "location": "location or null", 
+                "company": "company or null",
+                "remote": true/false/null
+              },
+              "applyAll": false,
+              "jobNumbers": null,
+              "response": "helpful response text"
+            }
+            
+            Examples:
+            - "find jobs in Lagos" -> action: "search_jobs", filters: {location: "Lagos"}
+            - "software developer jobs" -> action: "search_jobs", filters: {title: "software developer"}
+            - "remote marketing jobs" -> action: "search_jobs", filters: {title: "marketing", remote: true}
+            - "jobs at Microsoft" -> action: "search_jobs", filters: {company: "Microsoft"}
+            - "developer jobs in Abuja" -> action: "search_jobs", filters: {title: "developer", location: "Abuja"}
+            
+            IMPORTANT: Only return action "apply_job" if the user specifically mentions "apply". For all job search queries, use "search_jobs".
+            ` 
+          },
+          { role: 'user', content: job.data.message }
+        ];
+        
+        const output = await mistralChat(prompt);
+        return tryParseJSON(output, {
+          action: 'unknown',
+          response: 'I didn\'t understand your request. Try "find jobs in Lagos" or "apply 1,3,5".'
+        });
+
+      } else if (job.name === 'analyze-cv') {
+        const prompt = [
+          { 
+            role: 'system', 
+            content: `Analyze this CV and return JSON in this exact format:
+            {
+              "skills": number (0-100),
+              "experience": number (years),
+              "education": number (0-100),
+              "summary": "brief analysis text"
+            }
+            
+            Rate skills based on relevance and depth (0-100).
+            Calculate experience in years from work history.
+            Rate education based on qualifications and relevance (0-100).
+            Provide a brief summary of strengths.` 
+          },
+          { role: 'user', content: job.data.cvText }
+        ];
+        
+        const output = await mistralChat(prompt);
+        return tryParseJSON(output, {
+          skills: 50,
+          experience: 0,
+          education: 50,
+          summary: 'CV analysis completed with basic scoring.'
+        });
+
+      } else if (job.name === 'generate-cover-letter') {
+        const prompt = [
+          { 
+            role: 'system', 
+            content: `Write a professional cover letter based on this CV. Requirements:
+            - Keep it concise (150-250 words)
+            - Highlight key skills and experience
+            - Show enthusiasm for the role
+            - Professional tone
+            - Include placeholder for specific job title
+            - End with call to action
+            
+            Format it as a complete cover letter ready to send.` 
+          },
+          { role: 'user', content: `Please write a cover letter based on this CV:\n\n${job.data.cvText}` }
+        ];
+        
+        const coverLetter = await mistralChat(prompt);
+        
+        // Ensure we have a valid cover letter
+        if (!coverLetter || typeof coverLetter !== 'string' || coverLetter.length < 50) {
+          logger.error('Invalid cover letter result', { coverLetter });
+          return `Dear Hiring Manager,
+
+I am excited to apply for this position at your company. Based on my background and experience detailed in my CV, I believe I would be a valuable addition to your team.
+
+My skills and qualifications align well with the requirements for this role, and I am eager to contribute to your organization's success. I have a proven track record of delivering results and working effectively in dynamic environments.
+
+I would welcome the opportunity to discuss how my experience can benefit your team. Thank you for considering my application, and I look forward to hearing from you.
+
+Best regards,
+[Your Name]`;
+        }
+
+        return coverLetter;
+
+      } else {
+        throw new Error(`Unknown job type: ${job.name}`);
+      }
+    } catch (error) {
+      logger.error(`Job ${job.name} failed:`, error);
+      
+      // Return fallback responses
+      if (job.name === 'parse-query') {
+        return { 
+          action: 'unknown', 
+          response: 'Processing error occurred. Try "find jobs in Lagos" or "apply 1,3,5".' 
+        };
+      } else if (job.name === 'analyze-cv') {
+        return { 
+          skills: 0, 
+          experience: 0, 
+          education: 0, 
+          summary: 'CV analysis failed due to processing error.' 
+        };
+      } else if (job.name === 'generate-cover-letter') {
+        return `Dear Hiring Manager,
+
+I am writing to express my strong interest in this position. My background and experience make me a qualified candidate for this role.
+
+I am confident that my skills would be valuable to your organization, and I would welcome the opportunity to contribute to your team's success.
+
+Thank you for your consideration. I look forward to discussing this opportunity further.
+
+Best regards,
+[Your Name]`;
+      }
+      throw error;
+    }
+  },
+  { connection }
+);
+
+worker.on('completed', (job) => logger.info(`Job ${job.name} [${job.id}] completed.`));
+worker.on('failed', (job, err) => logger.error(`Job ${job?.name} [${job?.id}] failed: ${err.message}`));
+
+module.exports = worker;
