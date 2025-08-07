@@ -4,74 +4,101 @@ const config = require('../config');
 const logger = require('../utils/logger');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
-const { exec } = require('child_process');
-const util = require('util');
 const fs = require('fs');
-
-const execPromise = util.promisify(exec);
+const path = require('path');
 
 const redis = new Redis({
   host: config.get('redis.host'),
   port: config.get('redis.port'),
   password: config.get('redis.password'),
-  maxRetriesPerRequest: null  // ✅ REQUIRED for BullMQ
+  maxRetriesPerRequest: null
 });
 
+// Ensure uploads directory exists
+const uploadsDir = './uploads';
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  logger.info('Created uploads directory');
+}
 
 const cvWorker = new Worker('cv-processing', async (job) => {
   const { file, identifier } = job.data;
+  
   try {
-    // Fixed dynamic import
+    logger.info('Processing CV with file storage', { 
+      identifier, 
+      filename: file.originalname,
+      size: file.buffer.length 
+    });
+
+    // Detect file type
     const fileType = await import('file-type');
-    const type = await fileType.fileTypeFromBuffer(file.buffer);
+    let detectedType = await fileType.fileTypeFromBuffer(file.buffer);
 
-    if (
-      ![
-        'application/pdf',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      ].includes(type?.mime)
-    ) {
-      throw new Error('Unsupported file type');
+    if (!detectedType && file.originalname) {
+      const ext = file.originalname.toLowerCase().split('.').pop();
+      if (ext === 'pdf') {
+        detectedType = { mime: 'application/pdf', ext: 'pdf' };
+      } else if (ext === 'docx') {
+        detectedType = { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: 'docx' };
+      }
     }
 
-    const tempFile = `/tmp/${identifier}_${Date.now()}.${type.ext}`;
-    fs.writeFileSync(tempFile, file.buffer);
+    // Generate unique filename
+    const timestamp = Date.now();
+    const safeIdentifier = identifier.replace(/[^a-zA-Z0-9]/g, '_');
+    const filename = `cv_${safeIdentifier}_${timestamp}.pdf`;
+    const filepath = path.join(uploadsDir, filename);
 
-    // Only scan if clamscan is available
-    try {
-      await execPromise(`which clamscan`);
-      await execPromise(`clamscan ${tempFile}`);
-    } catch (error) {
-      logger.warn('ClamAV not available, skipping virus scan', { identifier });
-    }
+    // Save file to disk
+    fs.writeFileSync(filepath, file.buffer);
 
-    let text;
-    if (type.mime === 'application/pdf') {
-      const data = await pdfParse(file.buffer);
-      text = data.text;
+    // Extract text
+    let extractedText;
+    
+    if (detectedType?.mime === 'application/pdf') {
+      const pdfData = await pdfParse(file.buffer);
+      extractedText = pdfData.text;
     } else {
-      const { value } = await mammoth.extractRawText({ buffer: file.buffer });
-      text = value;
+      const wordResult = await mammoth.extractRawText({ buffer: file.buffer });
+      extractedText = wordResult.value;
     }
 
-    fs.unlinkSync(tempFile);
-    return text;
+    if (!extractedText || extractedText.trim().length < 50) {
+      fs.unlinkSync(filepath);
+      throw new Error('Could not extract text from CV');
+    }
+
+    // Clean text
+    const cleanedText = extractedText
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    // Store both text and filename (24 hour expiry)
+    await redis.set(`cv_text:${identifier}`, cleanedText, 'EX', 86400);
+    await redis.set(`cv_file:${identifier}`, filename, 'EX', 86400);
+
+    logger.info('CV processing completed', { identifier, filename });
+
+    return cleanedText;
 
   } catch (error) {
-    logger.error('CV processing error', { identifier, error });
-    throw error;
+    logger.error('CV processing failed', { identifier, error: error.message });
+    throw new Error('Failed to process CV');
   }
-}, { connection: redis });
+}, { 
+  connection: redis,
+  concurrency: 2
+});
 
 cvWorker.on('completed', (job) => {
   logger.info('CV processing completed', { jobId: job.id });
 });
 
-cvWorker.on('failed', (job, err) => {
-  logger.error('CV processing failed', {
-    jobId: job.id,
-    error: err.message
-  });
+cvWorker.on('failed', (job, error) => {
+  logger.error('CV processing failed', { jobId: job.id, error: error.message });
 });
 
 module.exports = cvWorker;

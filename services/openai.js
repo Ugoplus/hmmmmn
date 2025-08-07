@@ -3,13 +3,7 @@ const config = require('../config');
 const logger = require('../utils/logger');
 const { Queue } = require('bullmq');
 const Redis = require('ioredis');
-
-const redis = new Redis({
-  host: config.get('redis.host'),
-  port: config.get('redis.port'),
-  password: config.get('redis.password'),
-  maxRetriesPerRequest: null  // ✅ ADD THIS
-});
+const redis = require('../config/redis');
 
 const openaiQueue = new Queue('openai-tasks', { connection: redis });
 

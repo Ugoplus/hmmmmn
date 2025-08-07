@@ -10,23 +10,8 @@ const paystackService = require('./paystack');
 const { Queue } = require('bullmq');
 const { v4: uuidv4 } = require('uuid');
 const TelegramBot = require('node-telegram-bot-api');
-
-const pool = new Pool({
-  host: config.get('database.host'),
-  port: config.get('database.port'),
-  database: config.get('database.name'),
-  user: config.get('database.user'),
-  password: config.get('database.password'),
-  max: config.get('database.maxConnections')
-});
-
-const redis = new Redis({
-  host: config.get('redis.host'),
-  port: config.get('redis.port'),
-  password: config.get('redis.password'),
-  maxRetriesPerRequest: null  // ✅ REQUIRED for BullMQ
-});
-
+const redis = require('../config/redis');
+const dbManager = require('../config/database');
 
 const cvQueue = new Queue('cv-processing', { connection: redis });
 
@@ -143,38 +128,82 @@ class CVJobMatchingBot {
   // ================================
   async handleWhatsAppMessage(phone, message, file = null) {
   try {
-    // ... your existing code ...
-    
-    console.log('=== DEBUG: About to parse intent ===', { message });
-    try {
-      let intent;
-if (message.toLowerCase().includes('job') || message.toLowerCase().includes('find')) {
-  intent = { action: 'search_jobs', filters: {} };
-} else {
-  intent = { action: 'greeting' };
-}      
-      console.log('=== DEBUG: Intent parsed successfully ===', { intent });
+    if (file) {
+      const usage = await this.checkDailyUsage(phone);
+      if (usage.needsPayment) {
+        const paymentUrl = await this.initiateDailyPayment(phone);
+        return this.sendWhatsAppMessage(phone, 
+          `💰 Daily Payment Required\n\nGet 10 job applications for ₦500!\n\nPay here: ${paymentUrl}`
+        );
+      }
       
-      console.log('=== DEBUG: About to process intent ===');
-      const result = await this.processIntent(phone, intent);
-      console.log('=== DEBUG: processIntent result ===', { result });
-      return result;
-    } catch (intentError) {
-      console.log('=== DEBUG: Intent parsing failed ===', { 
-        error: intentError.message,
-        stack: intentError.stack 
+      if (file.buffer.length > 5 * 1024 * 1024) {
+        return this.sendWhatsAppMessage(phone, 
+          '❌ File too large. Please upload a CV smaller than 5MB.'
+        );
+      }
+      
+      const job = await cvQueue.add('process-cv', { 
+        file: {
+          buffer: file.buffer,
+          originalname: file.originalname,
+          mimetype: file.mimetype
+        }, 
+        identifier: phone 
       });
-      const result = await this.processIntent(phone, { action: 'greeting' });
-      return result;
+      
+      const cvText = await job.waitUntilFinished(cvQueue);
+      
+      await redis.set(`cv:${phone}`, cvText, 'EX', 86400);
+      await redis.set(`email:${phone}`, file.email || `hr@smartcvnaija.com.ng`, 'EX', 86400);
+      await redis.set(`state:${phone}`, 'awaiting_cover_letter', 'EX', 86400);
+      
+      const updatedUsage = await this.checkDailyUsage(phone);
+      return this.sendWhatsAppMessage(phone, 
+        `✅ CV uploaded successfully!\n\n📊 Applications remaining: ${updatedUsage.remaining}/10\n\n✍️ Send a cover letter or reply "generate"`
+      );
     }
-  } catch (error) {
-    console.log('=== DEBUG: Error in handleWhatsAppMessage ===', error);
-    logger.error('WhatsApp message processing error', { phone, error });
-    return this.sendWhatsAppMessage(phone, 'Sorry, an error occurred. Please try again.');
-  }
-}  // ✅ This closes handleWhatsAppMessage
 
-  
+    if (!message || typeof message !== 'string') {
+      return this.sendWhatsAppMessage(phone, 
+        '❓ Please try again.'
+      );
+    }
+
+    const state = await redis.get(`state:${phone}`);
+
+    if (state === 'awaiting_cover_letter') {
+      let coverLetter = message;
+      
+      if (message.toLowerCase().trim() === 'generate') {
+        const cvText = await redis.get(`cv:${phone}`);
+        if (!cvText) {
+          return this.sendWhatsAppMessage(phone, 
+            '❌ CV not found. Please upload your CV first.'
+          );
+        }
+        coverLetter = await openaiService.generateCoverLetter(cvText);
+      }
+      
+      await redis.set(`cover_letter:${phone}`, coverLetter, 'EX', 86400);
+      await redis.del(`state:${phone}`);
+      
+      const usage = await this.checkDailyUsage(phone);
+      return this.sendWhatsAppMessage(phone, 
+        `✅ Cover letter saved!\n\n📊 Applications remaining: ${usage.remaining}/10\n\n🔍 Search for jobs:\n• "find jobs in Lagos"`
+      );
+    }
+
+    const intent = await openaiService.parseJobQuery(message);
+    return await this.processIntent(phone, intent);
+    
+  } catch (error) {
+    logger.error('WhatsApp message processing error', { phone, error: error.message });
+    return this.sendWhatsAppMessage(phone, 
+      '❌ Sorry, an error occurred. Please try again.'
+    );
+  }
+}
 
      
   async handleTelegramMessage(chatId, message, file = null) {
@@ -245,77 +274,78 @@ if (message.toLowerCase().includes('job') || message.toLowerCase().includes('fin
   // INTENT PROCESSING
   // ================================
 
-  async processIntent(identifier, intent) {
-switch (intent.action) {
-  case 'greeting':
-    const usage = await this.checkDailyUsage(identifier);
-    return this.sendMessage(identifier,
-      `👋 Hello! Welcome to SmartCVNaija!\n\n📊 Applications today: ${usage.totalToday}/10\n📊 Remaining: ${usage.remaining}/10\n\n💬 I can help you:\n• "find jobs in Lagos"\n• "remote developer jobs"\n• Upload your CV (PDF/DOCX)`
-    );
-    
-  case 'search_jobs': {
-    // ... your existing search_jobs code    
-        // Job search is free, no usage check needed
-        const cacheKey = `jobs:${JSON.stringify(intent.filters)}`;
-        const cached = await redis.get(cacheKey);
-        if (cached) {
-          let parsed;
-          try {
-            parsed = JSON.parse(cached);
-          } catch (e) {
-            logger.error('Failed to parse cached jobs', { cached, error: e.message });
-          }
-          if (parsed) {
-            await redis.set(`last_jobs:${identifier}`, JSON.stringify(parsed.rows), 'EX', 3600);
-            const usage = await this.checkDailyUsage(identifier);
-            const responseWithUsage = `${parsed.response}\n\n📊 Applications remaining today: ${usage.remaining}/10`;
-            return this.sendMessage(identifier, responseWithUsage);
-          }
-        }
+ async processIntent(identifier, intent) {
+  try {
+    // Handle special commands first
+    if (
+      intent.action === 'reset' ||
+      (intent.response && intent.response.toLowerCase().includes('reset'))
+    ) {
+      return await this.handleResetCommand(identifier);
+    }
 
-        const { title, location, company, remote } = intent.filters;
-        const query = `
-          SELECT * FROM jobs 
-          WHERE ($1::text IS NULL OR title ILIKE $1)
-          AND ($2::text IS NULL OR location ILIKE $2)
-          AND ($3::text IS NULL OR company ILIKE $3)
-          AND ($4::boolean IS NULL OR is_remote = $4)
-          LIMIT 10`;
-        
-        const { rows } = await pool.query(query, [
-          title ? `%${title}%` : null,
-          location ? `%${location}%` : null,
-          company ? `%${company}%` : null,
-          typeof remote === 'boolean' ? remote : null
-        ]);
-
-        if (rows.length === 0) {
-          return this.sendMessage(identifier, '❌ No jobs found. Try different search terms.');
-        }
-
+    switch (intent.action) {
+      case 'greeting': {
+        await this.setUserState(identifier, 'idle');
         const usage = await this.checkDailyUsage(identifier);
-        const response = `🎯 Found ${rows.length} jobs:\n\n${rows.map((job, i) => 
-          `${i + 1}. ${job.title} at ${job.company}\n   📍 ${job.location}${job.is_remote ? ' (Remote)' : ''}`
-        ).join('\n\n')}\n\n📊 Applications remaining today: ${usage.remaining}/10\n\n💬 Reply:\n• "apply all" - Apply to all jobs\n• "apply 1,3,5" - Apply to specific jobs\n• "apply 2" - Apply to job #2`;
+        return this.sendMessage(
+          identifier,
+          `👋 Welcome to SmartCVNaija!\n\n📊 Today's Usage:\n• Applications sent: ${usage.totalToday}/10\n• Remaining: ${usage.remaining}/10\n\n💬 I can help you:\n• "find jobs in Lagos"\n• "remote developer jobs"\n• Upload CV (PDF/DOCX)\n• "help" for more options\n• "reset" to clear session`
+        );
+      }
 
-        await redis.set(`last_jobs:${identifier}`, JSON.stringify(rows), 'EX', 3600);
-        await redis.set(cacheKey, JSON.stringify({ response, rows }), 'EX', 3600);
-        
-        return this.sendMessage(identifier, response);
+      case 'help': {
+        return this.sendMessage(
+          identifier,
+          `🆘 **SmartCVNaija Commands**\n\n🔍 **Job Search:**\n• "find jobs in Lagos"\n• "developer jobs"\n• "remote marketing jobs"\n\n📄 **CV & Applications:**\n• Upload your CV (PDF/DOCX)\n• "apply all" - Apply to all jobs\n• "apply 1,2,3" - Apply to specific jobs\n\n💰 **Pricing:** ₦500 for 10 applications daily\n\n🔄 **Other Commands:**\n• "reset" - Clear your session\n• "status" - Check your usage\n\n❓ Need help? Just ask!`
+        );
+      }
+
+      case 'status': {
+        const currentUsage = await this.checkDailyUsage(identifier);
+        const userState = await this.getUserState(identifier);
+        const hasCV = await redis.exists(`cv:${identifier}`);
+        const hasCoverLetter = await redis.exists(`cover_letter:${identifier}`);
+
+        return this.sendMessage(
+          identifier,
+          `📊 **Your SmartCVNaija Status**\n\n📈 **Usage:**\n• Applications today: ${currentUsage.totalToday}/10\n• Remaining: ${currentUsage.remaining}/10\n• Payment status: ${currentUsage.needsPayment ? '⏳ Required' : '✅ Active'}\n\n📄 **Your Data:**\n• CV uploaded: ${hasCV ? '✅ Yes' : '❌ No'}\n• Cover letter: ${hasCoverLetter ? '✅ Ready' : '❌ Needed'}\n• Current state: ${userState}\n\n💡 ${hasCV ? 'Ready to apply to jobs!' : 'Upload your CV to get started'}`
+        );
+      }
+
+      case 'search_jobs': {
+        await this.setUserState(identifier, 'browsing_jobs');
+        return this.searchJobs(identifier, intent.filters);
       }
 
       case 'apply_job': {
-        return await this.handleJobApplication(identifier, intent);
+        await this.setUserState(identifier, 'applying');
+        const result = await this.handleJobApplication(identifier, intent);
+        await this.setUserState(identifier, 'idle');
+        return result;
       }
 
       default: {
         const usage = await this.checkDailyUsage(identifier);
-        return this.sendMessage(identifier, 
-          `ℹ️ Welcome to SmartCVNaija!\n\n📊 Applications today: ${usage.totalToday}/10\n📊 Remaining: ${usage.remaining}/10\n\n💬 Try:\n• "find jobs in Lagos"\n• "remote developer jobs"\n• Upload your CV (PDF/DOCX)`
+        return this.sendMessage(
+          identifier,
+          `ℹ️ I didn't understand that request.\n\n📊 Applications today: ${usage.totalToday}/10 | Remaining: ${usage.remaining}/10\n\n💬 **Try:**\n• "find jobs in Lagos"\n• "help" - Full command list\n• "status" - Check your usage\n• Upload your CV (PDF/DOCX)\n\nWhat can I help you with?`
         );
       }
     }
+  } catch (error) {
+    logger.error('Intent processing error', {
+      identifier,
+      intent: intent.action,
+      error: error.message
+    });
+
+    return this.sendMessage(
+      identifier,
+      '❌ Sorry, I encountered an error. Try "reset" to clear your session or "help" for commands.'
+    );
   }
+}
 
   async handleJobApplication(identifier, intent) {
     const usage = await this.checkDailyUsage(identifier);
@@ -409,66 +439,209 @@ switch (intent.action) {
   // JOB APPLICATION PROCESSING
   // ================================
 
-  async applyToJobs(identifier, jobIds) {
-    try {
-      // Deduct applications first
-      const usage = await this.deductApplications(identifier, jobIds.length);
+ async applyToJobs(identifier, jobIds) {
+  try {
+    // Deduct applications first
+    const usage = await this.deductApplications(identifier, jobIds.length);
+    
+    const cvText = await redis.get(`cv:${identifier}`);
+    const coverLetter = await redis.get(`cover_letter:${identifier}`);
+    const email = await redis.get(`email:${identifier}`);
+    const applications = [];
+
+    for (const jobId of jobIds) {
+      const { rows: [job] } = await dbManager.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
+      if (!job) continue;
+
+      // Get CV analysis with job title context
+      const analysis = await openaiService.analyzeCV(cvText, job.title);
+      const applicationId = uuidv4();
       
-      const cvText = await redis.get(`cv:${identifier}`);
-      const coverLetter = await redis.get(`cover_letter:${identifier}`);
-      const email = await redis.get(`email:${identifier}`);
-      const applications = [];
+      // Store application with CV score (no salary)
+      await dbManager.query(
+        'INSERT INTO applications (id, user_identifier, job_id, cv_text, cv_score, usage_date) VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)',
+        [applicationId, identifier, jobId, cvText, JSON.stringify(analysis)]
+      );
 
-      for (const jobId of jobIds) {
-        const { rows: [job] } = await pool.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
-        if (!job) continue;
-
-        const analysis = await openaiService.analyzeCV(cvText);
-        const applicationId = uuidv4();
-        
-        await pool.query(
-          'INSERT INTO applications (id, user_identifier, job_id, cv_text, cv_score, usage_date) VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)',
-          [applicationId, identifier, jobId, cvText, analysis]
-        );
-
-        await this.sendEmailToRecruiter(job.email, job.title, cvText, coverLetter, email);
-        applications.push({ id: applicationId, title: job.title, company: job.company });
-      }
-
-      if (applications.length === 0) {
-        return this.sendMessage(identifier, '❌ No valid jobs to apply to.');
-      }
-
-      const response = `✅ Successfully applied to ${applications.length} job(s):\n\n${applications.map(app => 
-        `• ${app.title} at ${app.company}`
-      ).join('\n')}\n\n📊 Applications remaining today: ${usage.applications_remaining}/10\n📧 Recruiters have been notified!`;
+      // Send enhanced email with CV score
+      await this.sendEmailToRecruiter(job.email, job.title, cvText, coverLetter, email, identifier);
       
-      return this.sendMessage(identifier, response);
-
-    } catch (error) {
-      if (error.message === 'Insufficient applications remaining') {
-        const usage = await this.checkDailyUsage(identifier);
-        return this.sendMessage(identifier, 
-          `❌ Not enough applications remaining!\n\n📊 Applications remaining: ${usage.remaining}/10\n\n💡 Come back tomorrow for fresh applications!`
-        );
-      }
-      throw error;
-    }
-  }
-
-  async sendEmailToRecruiter(recruiterEmail, jobTitle, cvText, coverLetter, applicantEmail) {
-    try {
-      await transporter.sendMail({
-        from: config.get('SMTP_USER'),
-        to: recruiterEmail,
-        subject: `New Application for ${jobTitle}`,
-        text: `A new application has been submitted for ${jobTitle}.\n\nApplicant Email: ${applicantEmail}\n\nCover Letter:\n${coverLetter}\n\nCV:\n${cvText}`
+      applications.push({ 
+        id: applicationId, 
+        title: job.title, 
+        company: job.company,
+        overallScore: analysis.overall_score,
+        jobMatchScore: analysis.job_match_score
       });
-      logger.info('Email sent to recruiter', { recruiterEmail, jobTitle });
-    } catch (error) {
-      logger.error('Failed to send email to recruiter', { recruiterEmail, error });
     }
+
+    if (applications.length === 0) {
+      return this.sendMessage(identifier, '❌ No valid jobs to apply to.');
+    }
+
+    const avgOverallScore = Math.round(applications.reduce((sum, app) => sum + app.overallScore, 0) / applications.length);
+    const avgMatchScore = Math.round(applications.reduce((sum, app) => sum + app.jobMatchScore, 0) / applications.length);
+    
+    const response = `✅ Successfully applied to ${applications.length} job(s):\n\n${applications.map(app => 
+      `• ${app.title} at ${app.company}\n  📊 CV Score: ${app.overallScore}/100 | Match: ${app.jobMatchScore}/100`
+    ).join('\n\n')}\n\n📈 Your Performance:\n• Average CV Score: ${avgOverallScore}/100\n• Average Job Match: ${avgMatchScore}/100\n\n📊 Applications remaining: ${usage.applications_remaining}/10\n📧 Recruiters have been notified with detailed analysis!`;
+    
+    return this.sendMessage(identifier, response);
+
+  } catch (error) {
+    logger.error('Job application error', { error: error.message });
+    throw error;
   }
+}
+
+  async sendEmailToRecruiter(recruiterEmail, jobTitle, cvText, coverLetter, applicantEmail, identifier) {
+  try {
+    // Get CV analysis/score
+    const analysis = await openaiService.analyzeCV(cvText, jobTitle);
+    
+    // Get the stored CV file
+    const cvFilename = await redis.get(`cv_file:${identifier}`);
+    let cvBuffer = null;
+    
+    if (cvFilename && fs.existsSync(`./uploads/${cvFilename}`)) {
+      cvBuffer = fs.readFileSync(`./uploads/${cvFilename}`);
+    }
+
+    // Create comprehensive email with CV score (no salary)
+    const emailHTML = `
+      <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">
+        <h2 style="color: #2c3e50;">New Job Application - SmartCVNaija</h2>
+        
+        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h3 style="color: #27ae60; margin-top: 0;">📊 CV Analysis</h3>
+          
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 15px 0;">
+            <div style="text-align: center; padding: 15px; background: white; border-radius: 6px;">
+              <div style="font-size: 24px; font-weight: bold; color: ${analysis.overall_score >= 70 ? '#27ae60' : analysis.overall_score >= 50 ? '#f39c12' : '#e74c3c'}">
+                ${analysis.overall_score}/100
+              </div>
+              <div style="font-size: 12px; color: #7f8c8d;">Overall Score</div>
+            </div>
+            <div style="text-align: center; padding: 15px; background: white; border-radius: 6px;">
+              <div style="font-size: 24px; font-weight: bold; color: ${analysis.job_match_score >= 70 ? '#27ae60' : analysis.job_match_score >= 50 ? '#f39c12' : '#e74c3c'}">
+                ${analysis.job_match_score}/100
+              </div>
+              <div style="font-size: 12px; color: #7f8c8d;">Job Match</div>
+            </div>
+          </div>
+          
+          <div style="display: flex; justify-content: space-between; margin: 10px 0; padding: 10px; background: white; border-radius: 6px;">
+            <strong>Recommendation:</strong> 
+            <span style="padding: 4px 12px; border-radius: 20px; color: white; font-weight: bold; background: ${analysis.recommendation === 'Strong' ? '#27ae60' : analysis.recommendation === 'Good' ? '#3498db' : analysis.recommendation === 'Average' ? '#f39c12' : '#e74c3c'}">
+              ${analysis.recommendation}
+            </span>
+          </div>
+          
+          <div style="display: flex; justify-content: space-between; margin: 10px 0;">
+            <strong>Experience:</strong> <span>${analysis.experience_years} years</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin: 10px 0;">
+            <strong>Education:</strong> <span>${analysis.education_level}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin: 10px 0;">
+            <strong>CV Quality:</strong> <span>${analysis.cv_quality}</span>
+          </div>
+        </div>
+
+        <div style="background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h3 style="color: #2c3e50;">📋 Application Details</h3>
+          <p><strong>Position:</strong> ${jobTitle}</p>
+          <p><strong>Applicant Email:</strong> <a href="mailto:${applicantEmail}">${applicantEmail}</a></p>
+          <p><strong>Applied via:</strong> SmartCVNaija</p>
+        </div>
+
+        ${analysis.key_skills && analysis.key_skills.length > 0 ? `
+        <div style="background: #e8f5e8; border: 1px solid #27ae60; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="color: #27ae60; margin-top: 0;">🛠️ Key Skills</h4>
+          <p>${analysis.key_skills.join(' • ')}</p>
+        </div>
+        ` : ''}
+
+        ${analysis.relevant_skills && analysis.relevant_skills.length > 0 ? `
+        <div style="background: #e3f2fd; border: 1px solid #2196f3; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="color: #2196f3; margin-top: 0;">🎯 Job-Relevant Skills</h4>
+          <p>${analysis.relevant_skills.join(' • ')}</p>
+        </div>
+        ` : ''}
+
+        ${analysis.strengths && analysis.strengths.length > 0 ? `
+        <div style="background: #e8f5e8; border: 1px solid #27ae60; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="color: #27ae60; margin-top: 0;">💪 Key Strengths</h4>
+          <ul style="margin: 0; padding-left: 20px;">
+            ${analysis.strengths.map(strength => `<li>${strength}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+
+        ${analysis.areas_for_improvement && analysis.areas_for_improvement.length > 0 ? `
+        <div style="background: #fff3e0; border: 1px solid #ff9800; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="color: #ff9800; margin-top: 0;">📈 Areas for Discussion</h4>
+          <ul style="margin: 0; padding-left: 20px;">
+            ${analysis.areas_for_improvement.map(area => `<li>${area}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+
+        <div style="background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="color: #2c3e50;">💼 Cover Letter</h4>
+          <p style="line-height: 1.6; color: #555;">${coverLetter.replace(/\n/g, '<br>')}</p>
+        </div>
+
+        <div style="background: #f1f2f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="color: #2c3e50;">📎 Attachments</h4>
+          <p>${cvBuffer ? '✅ CV attached to this email' : '❌ CV file not available - contact applicant directly'}</p>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
+        
+        <div style="text-align: center; color: #7f8c8d; font-size: 14px;">
+          <p>This application was intelligently processed by <a href="https://smartcvnaija.com.ng" style="color: #3498db;">SmartCVNaija</a></p>
+          <p>For support, contact: <a href="mailto:hr@smartcvnaija.com.ng">hr@smartcvnaija.com.ng</a></p>
+        </div>
+      </div>
+    `;
+
+    // Send email with enhanced subject line (no salary)
+    const emailOptions = {
+      from: 'SmartCVNaija <hr@smartcvnaija.com.ng>',
+      to: recruiterEmail,
+      subject: `New Application: ${jobTitle} | CV Score: ${analysis.overall_score}/100 | Match: ${analysis.job_match_score}/100 | ${analysis.recommendation}`,
+      html: emailHTML
+    };
+
+    if (cvBuffer) {
+      emailOptions.attachments = [
+        {
+          filename: `CV_${applicantEmail.split('@')[0]}.pdf`,
+          content: cvBuffer,
+          contentType: 'application/pdf'
+        }
+      ];
+    }
+
+    await transporter.sendMail(emailOptions);
+    
+    logger.info('Enhanced email sent to recruiter with CV score', { 
+      recruiterEmail, 
+      jobTitle,
+      overallScore: analysis.overall_score,
+      jobMatchScore: analysis.job_match_score,
+      recommendation: analysis.recommendation
+    });
+
+  } catch (error) {
+    logger.error('Failed to send enhanced recruiter email', { 
+      recruiterEmail, 
+      jobTitle,
+      error: error.message 
+    });
+  }
+}
 
   // ================================
   // PAYMENT PROCESSING

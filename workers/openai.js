@@ -1,347 +1,428 @@
 const { Worker } = require('bullmq');
 const axios = require('axios');
-const Redis = require('ioredis');
-const config = require('../config');
+const redis = require('../config/redis');
 const logger = require('../utils/logger');
 
-const connection = new Redis({
-  host: config.get('redis.host'),
-  port: config.get('redis.port'),
-  password: config.get('redis.password'),
-  maxRetriesPerRequest: null    // ✅ Simple and clean for BullMQ
-});
-
-// Simple message analyzer - no AI needed for basic patterns
-function analyzeMessage(message) {
-  if (!message || typeof message !== 'string') {
-    return {
-      action: 'unknown',
-      response: 'I didn\'t understand that. Please try again.'
-    };
+function parseJSON(raw, fallback = {}) {
+  try {
+    let cleaned = raw.trim();
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+    return JSON.parse(cleaned);
+  } catch (err) {
+    logger.error('JSON parse failed:', { raw, error: err.message });
+    return fallback;
   }
+}
 
+
+
+// Together AI function
+async function callTogetherAI(messages) {
+  try {
+    const response = await axios.post(
+      'https://api.together.xyz/v1/chat/completions',
+      {
+        model: 'Qwen/Qwen2.5-72B-Instruct-Turbo', // Fast, reliable model
+        messages: messages,
+        temperature: 0.1,
+        max_tokens: 1000
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.TOGETHER_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+
+    return response.data.choices[0].message.content;
+  } catch (error) {
+    logger.error('Together AI failed', { error: error.message });
+    throw error;
+  }
+}
+
+// Enhanced pattern matching
+function parseMessage(message) {
   const text = message.toLowerCase().trim();
-  
-  // Handle greetings
-  if (text.match(/^(hello|hi|hey|good morning|good afternoon|good evening|greetings|start)$/)) {
-    return {
-      action: 'greeting',
-      response: `Hello! 👋 Welcome to SmartCVNaija!
 
-I can help you:
-🔍 Find jobs - say "find jobs in Lagos"
-📄 Upload your CV for matching
-💼 Apply to positions
-💰 Payment guidance
-
-What would you like to do?`
-    };
+  // Reset command
+  if (text.includes('reset') || text.includes('clear')) {
+    return { action: 'reset', response: 'Resetting your session...' };
   }
 
-  // Handle help requests
-  if (text.includes('help') || text.includes('what can you do') || text.includes('commands')) {
-    return {
-      action: 'help',
-      response: `Here's what I can do:
-
-🔍 **Job Search**
-• "find jobs in Lagos"
-• "search developer jobs"
-• "remote jobs"
-
-📄 **CV & Applications**
-• Send me your CV (PDF/DOCX)
-• "apply to job 1"
-• "apply all"
-
-💰 **Payment**
-• ₦500 for 10 applications daily
-• Secure Paystack payment
-
-Just type what you're looking for!`
-    };
+  // Status/usage check
+  if (text.includes('status') || text.includes('usage') || text === 'my status') {
+    return { action: 'status', response: 'Checking your status...' };
   }
 
-  // Handle job applications
+  // Greetings
+  if (text.match(/^(hello|hi|hey|start|good morning|good afternoon|good evening)$/)) {
+    return { action: 'greeting', response: 'Hello! Welcome to SmartCVNaija!' };
+  }
+
+  // Help
+  if (text.includes('help') || text.includes('command')) {
+    return { action: 'help', response: 'Here are the available commands...' };
+  }
+
+  // Job applications
   if (text.includes('apply')) {
-    if (text.includes('all')) {
-      return {
-        action: 'apply_job',
-        applyAll: true,
-        response: 'I\'ll help you apply to all available jobs. Please upload your CV first if you haven\'t already.'
-      };
+    const jobNumbers = [];
+    const matches = text.match(/\b(\d+)\b/g);
+    if (matches) {
+      jobNumbers.push(...matches.map(n => parseInt(n)).filter(n => n > 0 && n <= 10));
     }
-    
-    // Look for job numbers like "apply to job 1", "apply 2", etc.
-    const jobMatch = text.match(/apply\s+(?:to\s+job\s+)?(\d+)/);
-    if (jobMatch) {
-      return {
-        action: 'apply_job',
-        jobNumber: parseInt(jobMatch[1]),
-        response: `I'll help you apply to job ${jobMatch[1]}. Please upload your CV first if you haven't already.`
-      };
-    }
-    
+
     return {
       action: 'apply_job',
-      response: 'I can help you apply! Please specify which job (e.g., "apply to job 1") or say "apply all" for all jobs.'
+      applyAll: text.includes('all'),
+      jobNumbers: jobNumbers.length > 0 ? jobNumbers : null
     };
   }
 
-  // Handle job searches
-  if (text.includes('find') || text.includes('search') || text.includes('job') || text.includes('work') || text.includes('position')) {
+  // Job searches
+  if (text.includes('find') || text.includes('search') || text.includes('job') || text.includes('looking')) {
     const filters = {};
-    
-    // Extract location
-    const locationMatch = text.match(/(?:in|at|from)\s+([a-zA-Z\s]+?)(?:\s|$|,)/);
-    if (locationMatch) {
-      filters.location = locationMatch[1].trim();
+
+    // Nigerian locations
+    const locations = ['lagos', 'abuja', 'ibadan', 'kano', 'port harcourt', 'benin', 'jos', 'kaduna', 'rivers', 'edo', 'oyo'];
+    for (const location of locations) {
+      if (text.includes(location)) {
+        filters.location = location.charAt(0).toUpperCase() + location.slice(1);
+        break;
+      }
     }
-    
-    // Extract job types
+
+    // Job types
     if (text.includes('remote')) filters.remote = true;
     if (text.includes('developer') || text.includes('programming')) filters.title = 'developer';
     if (text.includes('designer')) filters.title = 'designer';
     if (text.includes('manager')) filters.title = 'manager';
-    if (text.includes('sales')) filters.title = 'sales';
     if (text.includes('marketing')) filters.title = 'marketing';
-    if (text.includes('engineer')) filters.title = 'engineer';
-    
+    if (text.includes('sales')) filters.title = 'sales';
+
     return {
       action: 'search_jobs',
-      filters: filters,
-      response: `🔍 Searching for jobs${filters.location ? ` in ${filters.location}` : ''}${filters.title ? ` for ${filters.title}` : ''}...`
+      filters: filters
     };
   }
 
-  // Handle payment/pricing questions
-  if (text.includes('price') || text.includes('cost') || text.includes('pay') || text.includes('₦') || text.includes('naira')) {
-    return {
-      action: 'pricing',
-      response: `💰 **SmartCVNaija Pricing**
-
-🎯 **Daily Access**: ₦500
-• 10 job applications
-• CV analysis & matching
-• Cover letter generation
-• Valid for 24 hours
-
-🔒 **Secure Payment via Paystack**
-• Card, bank transfer, USSD
-• Instant activation
-
-Ready to get started?`
-    };
-  }
-
-  // Handle CV/resume related queries
-  if (text.includes('cv') || text.includes('resume') || text.includes('upload')) {
-    return {
-      action: 'cv_info',
-      response: `📄 **CV Upload Instructions**
-
-📎 **Supported formats**: PDF, DOCX
-📏 **Max size**: 5MB
-🔍 **What I do**: 
-• Extract and analyze your CV
-• Match with suitable jobs
-• Generate cover letters
-• Score your application
-
-Just send me your CV file!`
-    };
-  }
-
-  // Default for unrecognized messages
-  return {
-    action: 'unknown',
-    response: `I'm not sure what you're looking for. 
-
-Try saying:
-• "Hello" - to get started
-• "Find jobs in Lagos" - to search
-• "Help" - for all commands
-• Send your CV - to begin applying
-
-What can I help you with?`
-  };
-}
-
-// Fallback AI function for complex queries (only used when simple patterns don't match)
-async function aiAnalyzeMessage(message) {
-  try {
-    const response = await axios.post(
-      'https://api.mistral.ai/v1/chat/completions',
-      {
-        model: 'mistral-small',
-        messages: [
-          {
-            role: 'system',
-            content: `You are a job search assistant. Analyze the user's message and respond with JSON in this exact format:
-{
-  "action": "search_jobs" | "apply_job" | "greeting" | "help" | "unknown",
-  "filters": {
-    "title": "job title or null",
-    "location": "location or null",
-    "remote": true/false/null
-  },
-  "applyAll": true/false,
-  "jobNumber": number or null,
-  "response": "helpful response text"
-}
-
-Keep responses friendly and helpful.`
-          },
-          {
-            role: 'user',
-            content: message
-          }
-        ],
-        temperature: 0.1,
-        max_tokens: 500
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${config.get('openai.key')}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    const content = response.data.choices[0].message.content;
-    
-    // Clean up response (remove markdown if present)
-    let cleanContent = content.trim();
-    if (cleanContent.startsWith('```json')) {
-      cleanContent = cleanContent.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-    } else if (cleanContent.startsWith('```')) {
-      cleanContent = cleanContent.replace(/^```\s*/, '').replace(/\s*```$/, '');
-    }
-    
-    return JSON.parse(cleanContent);
-    
-  } catch (error) {
-    logger.error('AI analysis failed:', error.message);
-    return {
-      action: 'unknown',
-      response: 'I apologize, but I encountered an issue. Please try rephrasing your message.'
-    };
-  }
+  return { action: 'unknown' };
 }
 
 const worker = new Worker(
   'openai-tasks',
   async (job) => {
-    logger.info(`Processing job ${job.name} [${job.id}]`);
-
     try {
       if (job.name === 'parse-query') {
         const message = job.data.message;
         
-        if (!message) {
-          return {
-            action: 'unknown',
-            response: 'No message received to process.'
-          };
+        // Try pattern matching first (faster)
+        const simpleResult = parseMessage(message);
+        if (simpleResult.action !== 'unknown') {
+          return simpleResult;
         }
 
-        // First try simple pattern matching
-        let result = analyzeMessage(message);
-        
-        // Only use AI for complex queries that don't match simple patterns
-        if (result.action === 'unknown' && message.length > 10) {
-          result = await aiAnalyzeMessage(message);
-        }
-        
-        logger.info(`Message "${message}" analyzed as: ${result.action}`);
-        return result;
+        // Try Together AI for complex queries
+        if (process.env.TOGETHER_API_KEY) {
+          try {
+            const prompt = [
+              {
+                role: 'system',
+                content: `You are SmartCVNaija assistant. Parse queries and return JSON:
+{
+  "action": "search_jobs" | "apply_job" | "greeting" | "help" | "status" | "unknown",
+  "filters": {"title": "job title", "location": "Nigerian city", "remote": true/false},
+  "applyAll": true/false,
+  "jobNumbers": [1,2,3] or null,
+  "response": "helpful response"
+}`
+              },
+              { role: 'user', content: message }
+            ];
 
-      } else if (job.name === 'analyze-cv') {
+            const result = await callTogetherAI(prompt);
+            return JSON.parse(result);
+          } catch (error) {
+            logger.warn('Together AI failed, using fallback');
+          }
+        }
+
+        // Fallback
+        return {
+          action: 'greeting',
+          response: 'Hi! Try "find jobs in Lagos" or "help" for commands.'
+        };
+
+      }
+      else if (job.name === 'analyze-cv') {
+  const cvText = job.data.cvText;
+  const jobTitle = job.data.jobTitle || null;
+  
+  if (!cvText) {
+    return {
+      skills: 0, experience: 0, education: 0,
+      summary: 'No CV text provided for analysis'
+    };
+  }
+
+  // Try AI analysis first
+  if (process.env.TOGETHER_API_KEY) {
+    try {
+      const prompt = [
+        {
+          role: 'system',
+          content: `You are a Nigerian HR expert. Analyze this CV and return JSON:
+{
+  "overall_score": number (0-100),
+  "job_match_score": number (0-100),
+  "skills_score": number (0-100),
+  "experience_score": number (0-100),
+  "education_score": number (0-100),
+  "experience_years": number,
+  "key_skills": ["skill1", "skill2", "skill3"],
+  "relevant_skills": ["relevant1", "relevant2"],
+  "education_level": "Bachelor's|Master's|PhD|Diploma|Secondary|Other",
+  "summary": "brief professional summary",
+  "strengths": ["strength1", "strength2", "strength3"],
+  "areas_for_improvement": ["area1", "area2"],
+  "recommendation": "Strong|Good|Average|Weak",
+  "cv_quality": "Excellent|Good|Average|Poor"
+}
+
+Focus on Nigerian job market standards. Analyze:
+- How well the CV matches the specific job requirements
+- Skills relevance to the position
+- Experience level appropriateness
+- CV presentation quality
+- Professional development indicators
+
+DO NOT estimate salary ranges. Focus only on job fit and CV quality.`
+        },
+        { 
+          role: 'user', 
+          content: `Analyze this CV${jobTitle ? ` for ${jobTitle} position` : ''}:\n\n${cvText.substring(0, 3000)}` 
+        }
+      ];
+
+      const result = await callTogetherAI(prompt);
+      const analysis = parseJSON(result, null);
+      
+      if (analysis && analysis.overall_score) {
+        return analysis;
+      }
+    } catch (error) {
+      logger.error('AI CV analysis failed', { error: error.message });
+    }
+  }
+
+  // Fallback analysis using pattern matching
+  return performFallbackCVAnalysis(cvText, jobTitle);
+}
+  } // <-- Close the 'if (job.name === 'analyze-cv')' block
+
+} else if (job.name === 'generate-cover-letter') {
         const cvText = job.data.cvText;
         
-        if (!cvText) {
-          return {
-            skills: 0, experience: 0, education: 0,
-            summary: 'No CV text provided for analysis'
-          };
+        if (process.env.TOGETHER_API_KEY) {
+          try {
+            const prompt = [
+              {
+                role: 'system',
+                content: 'Write a professional Nigerian cover letter, 150-200 words.'
+              },
+              { role: 'user', content: `Cover letter for: ${cvText.substring(0, 1000)}` }
+            ];
+
+            const result = await callTogetherAI(prompt);
+            return result;
+          } catch (error) {
+            // Fallback cover letter
+          }
         }
 
-        try {
-          const analysis = await aiAnalyzeMessage(`Analyze this CV and return skills score (0-100), years of experience, education score (0-100), and summary: ${cvText.substring(0, 1000)}`);
-          
-          return {
-            skills: analysis.skills || 50,
-            experience: analysis.experience || 0,
-            education: analysis.education || 50,
-            summary: analysis.summary || 'CV analysis completed'
-          };
-          
-        } catch (error) {
-          return {
-            skills: 50, experience: 2, education: 50,
-            summary: 'CV analysis completed with basic scoring'
-          };
-        }
+        return `Dear Hiring Manager,
 
-      } else if (job.name === 'generate-cover-letter') {
-        const cvText = job.data.cvText;
-        
-        try {
-          const result = await aiAnalyzeMessage(`Write a professional cover letter based on this CV: ${cvText.substring(0, 800)}`);
-          return result.response || `Dear Hiring Manager,
+I am writing to express my strong interest in this position. My background and experience make me well-suited for this role.
 
-I am writing to express my strong interest in this position. Based on my background and experience, I believe I would be a valuable addition to your team.
+I am excited about the opportunity to contribute to your organization's success in Nigeria's dynamic market.
 
 Please find my CV attached for your review.
 
 Best regards,
 [Your Name]`;
-          
-        } catch (error) {
-          return `Dear Hiring Manager,
-
-I am excited to apply for this position. My skills and experience make me a strong candidate for this role.
-
-Please find my CV attached for your consideration.
-
-Best regards,
-[Your Name]`;
-        }
-
-      } else {
-        throw new Error(`Unknown job type: ${job.name}`);
       }
 
     } catch (error) {
-      logger.error(`Job ${job.name} failed:`, error.message);
-      
-      // Return safe fallbacks
-      if (job.name === 'parse-query') {
-        return { 
-          action: 'unknown', 
-          response: 'I encountered an issue processing your message. Please try again.' 
-        };
-      } else if (job.name === 'analyze-cv') {
-        return { 
-          skills: 50, experience: 1, education: 50, 
-          summary: 'CV analysis completed with basic scoring.' 
-        };
-      } else if (job.name === 'generate-cover-letter') {
-        return 'Dear Hiring Manager,\n\nI am interested in this position. Please find my CV attached.\n\nBest regards,\n[Your Name]';
-      }
-      
-      throw error;
+      logger.error('Worker job failed', { error: error.message });
+      return { action: 'unknown', response: 'Error processing request' };
     }
   },
-  { connection }
+  { connection: redis, concurrency: 3 }
 );
 
-worker.on('completed', (job) => {
-  logger.info(`Job ${job.name} [${job.id}] completed successfully`);
-});
+module.exports = worker;  },
+  { connection: redis, concurrency: 3 }
+);
 
-worker.on('failed', (job, err) => {
-  logger.error(`Job ${job?.name} [${job?.id}] failed: ${err.message}`);
-});
+// Updated fallback CV analysis function (no salary)
+function performFallbackCVAnalysis(cvText, jobTitle = null) {
+  const text = cvText.toLowerCase();
+  let overallScore = 50; // Base score
+  let jobMatchScore = 50; // Base job match
+
+  // Skills analysis
+  const techSkills = ['javascript', 'python', 'java', 'react', 'node', 'sql', 'html', 'css', 'php', 'angular', 'vue'];
+  const businessSkills = ['management', 'leadership', 'analysis', 'strategy', 'planning', 'communication'];
+  const foundSkills = [];
+  const relevantSkills = [];
+  
+  techSkills.forEach(skill => {
+    if (text.includes(skill)) {
+      foundSkills.push(skill);
+      overallScore += 3;
+      // Check if skill is relevant to job title
+      if (jobTitle && (jobTitle.toLowerCase().includes('developer') || jobTitle.toLowerCase().includes('programmer'))) {
+        relevantSkills.push(skill);
+        jobMatchScore += 5;
+      }
+    }
+  });
+  
+  businessSkills.forEach(skill => {
+    if (text.includes(skill)) {
+      foundSkills.push(skill);
+      overallScore += 2;
+      // Check if skill is relevant to job title
+      if (jobTitle && (jobTitle.toLowerCase().includes('manager') || jobTitle.toLowerCase().includes('lead'))) {
+        relevantSkills.push(skill);
+        jobMatchScore += 4;
+      }
+    }
+  });
+
+  // Experience analysis
+  const experienceYears = extractExperienceYears(text);
+  let experienceScore = Math.min(experienceYears * 10, 100);
+  
+  if (experienceYears >= 5) overallScore += 10;
+  if (experienceYears >= 3) overallScore += 5;
+
+  // Job-specific experience matching
+  if (jobTitle) {
+    const jobKeywords = jobTitle.toLowerCase().split(' ');
+    jobKeywords.forEach(keyword => {
+      if (text.includes(keyword)) {
+        jobMatchScore += 8;
+      }
+    });
+  }
+
+  // Education analysis
+  let educationScore = 50;
+  let educationLevel = 'Other';
+  
+  if (text.includes('phd') || text.includes('doctorate')) {
+    educationScore = 100;
+    educationLevel = 'PhD';
+    overallScore += 15;
+  } else if (text.includes('master') || text.includes('msc') || text.includes('mba')) {
+    educationScore = 85;
+    educationLevel = 'Master\'s';
+    overallScore += 10;
+  } else if (text.includes('bachelor') || text.includes('bsc') || text.includes('ba ') || text.includes('beng')) {
+    educationScore = 75;
+    educationLevel = 'Bachelor\'s';
+    overallScore += 5;
+  } else if (text.includes('diploma') || text.includes('hnd')) {
+    educationScore = 60;
+    educationLevel = 'Diploma';
+  }
+
+  // CV quality assessment
+  let cvQuality = 'Average';
+  const hasContact = text.includes('@') || text.includes('email');
+  const hasPhone = text.includes('phone') || text.includes('mobile') || text.includes('tel');
+  const hasProperLength = text.length > 500 && text.length < 5000;
+  
+  if (hasContact && hasPhone && hasProperLength && foundSkills.length >= 3) {
+    cvQuality = 'Good';
+    overallScore += 5;
+  }
+  if (foundSkills.length >= 5 && experienceYears >= 3) {
+    cvQuality = 'Excellent';
+    overallScore += 10;
+  }
+  if (text.length < 300 || (!hasContact && !hasPhone)) {
+    cvQuality = 'Poor';
+    overallScore -= 10;
+  }
+
+  // Areas for improvement instead of red flags
+  const areasForImprovement = [];
+  if (text.length < 500) areasForImprovement.push('CV could be more detailed');
+  if (!hasContact) areasForImprovement.push('Missing contact email');
+  if (!hasPhone) areasForImprovement.push('Missing phone number');
+  if (foundSkills.length < 3) areasForImprovement.push('Could highlight more relevant skills');
+  if (experienceYears < 1) areasForImprovement.push('Consider adding internship or project experience');
+
+  // Strengths identification
+  const strengths = [];
+  if (foundSkills.length >= 5) strengths.push('Strong technical skill set');
+  if (experienceYears >= 5) strengths.push('Extensive professional experience');
+  if (educationScore >= 75) strengths.push('Strong educational background');
+  if (text.includes('award') || text.includes('certification')) strengths.push('Professional achievements');
+  if (cvQuality === 'Excellent') strengths.push('Well-structured CV presentation');
+
+  // Overall recommendation
+  let recommendation = 'Average';
+  if (overallScore >= 80) recommendation = 'Strong';
+  else if (overallScore >= 65) recommendation = 'Good';
+  else if (overallScore < 50) recommendation = 'Weak';
+
+  return {
+    overall_score: Math.min(Math.max(overallScore, 0), 100),
+    job_match_score: Math.min(Math.max(jobMatchScore, 0), 100),
+    skills_score: Math.min(foundSkills.length * 8, 100),
+    experience_score: experienceScore,
+    education_score: educationScore,
+    experience_years: experienceYears,
+    key_skills: foundSkills.slice(0, 5),
+    relevant_skills: relevantSkills.slice(0, 3),
+    education_level: educationLevel,
+    summary: `Professional with ${experienceYears} years experience and ${educationLevel} education`,
+    strengths: strengths.slice(0, 4),
+    areas_for_improvement: areasForImprovement.slice(0, 3),
+    recommendation: recommendation,
+    cv_quality: cvQuality
+  };
+}
+
+function extractExperienceYears(text) {
+  // Look for experience patterns
+  const patterns = [
+    /(\d+)\s*years?\s*(of\s*)?experience/i,
+    /(\d+)\s*yrs?\s*(of\s*)?experience/i,
+    /experience.*?(\d+)\s*years?/i,
+    /(\d+)\s*years?\s*in\s*/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return parseInt(match[1]);
+    }
+  }
+
+  // Fallback: estimate from job positions
+  const jobCount = (text.match(/\b(19|20)\d{2}\b/g) || []).length;
+  return Math.max(Math.floor(jobCount / 2), 0);
+}
 
 module.exports = worker;
