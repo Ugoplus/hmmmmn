@@ -12,6 +12,7 @@ const { v4: uuidv4 } = require('uuid');
 const TelegramBot = require('node-telegram-bot-api');
 const redis = require('../config/redis');
 const dbManager = require('../config/database');
+const fs = require('fs');
 
 const cvQueue = new Queue('cv-processing', { connection: redis });
 
@@ -38,7 +39,7 @@ if (telegramToken && telegramToken.trim() !== '' && telegramToken !== 'your-tele
 } else {
   logger.info('Telegram bot not initialized - no valid token provided');
 }
-
+let pool = null;
 class CVJobMatchingBot {
   
   // ================================
@@ -48,7 +49,7 @@ class CVJobMatchingBot {
   async checkDailyUsage(identifier) {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
     
-    const { rows: [usage] } = await pool.query(`
+    const { rows: [usage] } = await dbManager.query(`
       SELECT 
         applications_remaining,
         usage_date,
@@ -79,7 +80,7 @@ class CVJobMatchingBot {
   }
 
   async resetDailyUsage(identifier, today) {
-    await pool.query(`
+    await dbManager.query(`
       INSERT INTO daily_usage (user_identifier, applications_remaining, usage_date, total_applications_today, payment_status)
       VALUES ($1, 0, $2, 0, 'pending')
       ON CONFLICT (user_identifier) 
@@ -96,7 +97,7 @@ class CVJobMatchingBot {
     const email = await redis.get(`email:${identifier}`) || `${identifier}@example.com`;
     const reference = `daily_${uuidv4()}_${identifier}`;
     
-    await pool.query(`
+    await dbManager.query(`
       UPDATE daily_usage 
       SET payment_reference = $1, payment_status = 'pending', updated_at = NOW()
       WHERE user_identifier = $2
@@ -106,7 +107,7 @@ class CVJobMatchingBot {
   }
 
   async deductApplications(identifier, count) {
-    const result = await pool.query(`
+    const result = await dbManager.query(`
       UPDATE daily_usage 
       SET 
         applications_remaining = applications_remaining - $1,
@@ -661,7 +662,7 @@ class CVJobMatchingBot {
       const today = new Date().toISOString().split('T')[0];
       
       // Give user 10 applications for today
-      await pool.query(`
+      await dbManager.query(`
         UPDATE daily_usage 
         SET 
           applications_remaining = 10,
@@ -701,6 +702,117 @@ class CVJobMatchingBot {
       return this.sendMessage(identifier, '❌ Payment failed. Please try again.');
     }
   }
+
+// ================================
+  // USER STATE MANAGEMENT
+  // ================================
+  
+  async setUserState(identifier, state) {
+    try {
+      await redis.set(`state:${identifier}`, state, 'EX', 86400);
+    } catch (error) {
+      logger.error('Failed to set user state', { identifier, state, error: error.message });
+    }
+  }
+
+  async getUserState(identifier) {
+    try {
+      return await redis.get(`state:${identifier}`) || 'idle';
+    } catch (error) {
+      logger.error('Failed to get user state', { identifier, error: error.message });
+      return 'idle';
+    }
+  }
+
+  async handleResetCommand(identifier) {
+    try {
+      // Clear all user data
+      const keys = [
+        `cv:${identifier}`,
+        `cover_letter:${identifier}`,
+        `email:${identifier}`,
+        `state:${identifier}`,
+        `last_jobs:${identifier}`,
+        `pending_jobs:${identifier}`,
+        `cv_text:${identifier}`,
+        `cv_file:${identifier}`
+      ];
+
+      for (const key of keys) {
+        await redis.del(key);
+      }
+
+      await this.setUserState(identifier, 'idle');
+      
+      return this.sendMessage(identifier, 
+        `🔄 **Session Reset Complete**\n\n✅ All your data has been cleared:\n• CV removed\n• Cover letter removed\n• Job search history cleared\n• Application status reset\n\n💡 **Ready for a fresh start!**\n\nYou can now:\n• Upload a new CV\n• Search for jobs\n• "help" for commands\n\nWhat would you like to do?`
+      );
+    } catch (error) {
+      logger.error('Reset command error', { identifier, error: error.message });
+      return this.sendMessage(identifier, '❌ Reset failed. Please try again.');
+    }
+  }
+
+  async searchJobs(identifier, filters) {
+    try {
+      const cacheKey = `jobs:${JSON.stringify(filters)}`;
+      const cached = await redis.get(cacheKey);
+      
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.rows) {
+            await redis.set(`last_jobs:${identifier}`, JSON.stringify(parsed.rows), 'EX', 3600);
+            return this.sendMessage(identifier, parsed.response);
+          }
+        } catch (e) {
+          logger.error('Failed to parse cached jobs', { cached, error: e.message });
+        }
+      }
+
+      const { title, location, company, remote } = filters;
+      
+      const query = `
+        SELECT * FROM jobs 
+        WHERE ($1::text IS NULL OR title ILIKE $1)
+        AND ($2::text IS NULL OR location ILIKE $2)
+        AND ($3::text IS NULL OR company ILIKE $3)
+        AND ($4::boolean IS NULL OR is_remote = $4)
+        AND (is_remote = true OR is_remote IS NULL)
+        ORDER BY COALESCE(last_updated, scraped_at, NOW()) DESC
+        LIMIT 10`;
+        
+      const { rows } = await dbManager.query(query, [
+        title ? `%${title}%` : null,
+        location ? `%${location}%` : null,
+        company ? `%${company}%` : null,
+        typeof remote === 'boolean' ? remote : null
+      ]);
+
+      if (rows.length === 0) {
+        return this.sendMessage(identifier, 
+          `🔍 **No Jobs Found**\n\nTry different search terms:\n• "developer jobs in Lagos"\n• "remote marketing jobs"\n• "manager positions"\n\n💡 **Tip:** Use broader terms for more results.`
+        );
+      }
+
+      const response = `🎯 **Found ${rows.length} Job${rows.length > 1 ? 's' : ''}:**\n\n${rows.map((job, i) => 
+        `**${i + 1}.** ${job.title}\n🏢 ${job.company}\n📍 ${job.location}${job.is_remote ? ' (Remote)' : ''}\n`
+      ).join('\n')}\n💬 **Apply Now:**\n• "apply all" - Apply to all jobs\n• "apply 1,3,5" - Apply to specific jobs\n• Upload CV first if needed`;
+
+      await redis.set(`last_jobs:${identifier}`, JSON.stringify(rows), 'EX', 3600);
+      await redis.set(cacheKey, JSON.stringify({ response, rows }), 'EX', 3600);
+      
+      return this.sendMessage(identifier, response);
+
+    } catch (error) {
+      logger.error('Job search error', { identifier, filters, error: error.message });
+      return this.sendMessage(identifier, 
+        '❌ Job search failed. Please try again or contact support.'
+      );
+    }
+  }
+
+
 
   // ================================
   // MESSAGING METHODS

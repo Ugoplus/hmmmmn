@@ -15,12 +15,23 @@ const openaiWorker = require('./workers/openai');
 const cvWorker = require('./workers/cv');
 const redis = require('./config/redis');
 const app = express();
-const dbManager = require('./config/database');
 const jobCleanup = require('./services/job-cleanup');
+const dbManager = require('./config/database');
+const dbManager = require('./config/database');
+
+let pool = null;
+
+async function initializeDatabase() {
+  try {
+    pool = await dbManager.connect();
+    logger.info('Database connection established in server.js');
+  } catch (error) {
+    logger.error('Failed to initialize database in server.js', { error: error.message });
+    process.exit(1);
+  }
+}
 
 
-
-// ✅ Add error handling
 redis.on('error', (error) => {
   logger.error('Redis connection error', { error: error.message });
 });
@@ -506,95 +517,105 @@ app.use((req, res) => {
 });
 
 // Start server
-const server = app.listen(config.get('port'), () => {
-  logger.info(`SmartCVNaija server started successfully`, {
-    port: config.get('port'),
-    environment: config.get('env'),
-    baseUrl: config.get('baseUrl'),
-    telegramEnabled: !!telegramBot,
-    timestamp: new Date().toISOString()
+initializeDatabase().then(() => {
+  const server = app.listen(config.get('port'), () => {
+    logger.info(`SmartCVNaija server started successfully`, {
+      port: config.get('port'),
+      environment: config.get('env'),
+      baseUrl: config.get('baseUrl'),
+      telegramEnabled: !!telegramBot,
+      timestamp: new Date().toISOString()
+    });
   });
-});
 
-// Graceful shutdown handling
-const gracefulShutdown = async (signal) => {
-  logger.info(`Received ${signal}, starting graceful shutdown`);
-  
-  try {
-    // Close server
-    await new Promise((resolve) => {
-      server.close((err) => {
-        if (err) {
-          logger.error('Error closing server', { error: err.message });
-        } else {
-          logger.info('Server closed successfully');
-        }
-        resolve();
+  // Graceful shutdown handling
+  const gracefulShutdown = async (signal) => {
+    logger.info(`Received ${signal}, starting graceful shutdown`);
+    
+    try {
+      // Close server
+      await new Promise((resolve) => {
+        server.close((err) => {
+          if (err) {
+            logger.error('Error closing server', { error: err.message });
+          } else {
+            logger.info('Server closed successfully');
+          }
+          resolve();
+        });
       });
+      
+      // Close workers
+      if (openaiWorker && typeof openaiWorker.close === 'function') {
+        await openaiWorker.close();
+        logger.info('OpenAI worker closed');
+      }
+      
+      if (cvWorker && typeof cvWorker.close === 'function') {
+        await cvWorker.close();
+        logger.info('CV worker closed');
+      }
+      
+      // Close database connection
+      await pool.end();
+      logger.info('Database connection closed');
+      
+      // Close Redis connection
+      await redis.quit();
+      logger.info('Redis connection closed');
+      
+      // Close StatsD connection
+      if (statsd && typeof statsd.close === 'function') {
+        statsd.close();
+        logger.info('StatsD connection closed');
+      }
+      
+      logger.info('Graceful shutdown completed');
+      process.exit(0);
+      
+    } catch (error) {
+      logger.error('Error during graceful shutdown', { error: error.message });
+      process.exit(1);
+    }
+  };
+
+  // Handle shutdown signals
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+  // Handle unhandled rejections
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Rejection', { 
+      reason: reason?.message || reason,
+      stack: reason?.stack,
+      promise: promise.toString()
     });
     
-    // Close workers
-    if (openaiWorker && typeof openaiWorker.close === 'function') {
-      await openaiWorker.close();
-      logger.info('OpenAI worker closed');
-    }
-    
-    if (cvWorker && typeof cvWorker.close === 'function') {
-      await cvWorker.close();
-      logger.info('CV worker closed');
-    }
-    
-    // Close database connection
-    await pool.end();
-    logger.info('Database connection closed');
-    
-    // Close Redis connection
-    await redis.quit();
-    logger.info('Redis connection closed');
-    
-    // Close StatsD connection
-    if (statsd && typeof statsd.close === 'function') {
-      statsd.close();
-      logger.info('StatsD connection closed');
-    }
-    
-    logger.info('Graceful shutdown completed');
-    process.exit(0);
-    
-  } catch (error) {
-    logger.error('Error during graceful shutdown', { error: error.message });
-    process.exit(1);
-  }
-};
-
-// Handle shutdown signals
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-
-// Handle unhandled rejections
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection', { 
-    reason: reason?.message || reason,
-    stack: reason?.stack,
-    promise: promise.toString()
+    // Don't exit immediately, let the app handle it gracefully
+    setTimeout(() => {
+      logger.error('Exiting due to unhandled rejection');
+      process.exit(1);
+    }, 1000);
   });
-  
-  // Don't exit immediately, let the app handle it gracefully
-  setTimeout(() => {
-    logger.error('Exiting due to unhandled rejection');
-    process.exit(1);
-  }, 1000);
-});
 
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception', { 
-    error: error.message, 
-    stack: error.stack 
+  // Handle uncaught exceptions
+  process.on('uncaughtException', (error) => {
+    logger.error('Uncaught Exception', { 
+      error: error.message, 
+      stack: error.stack 
+    });
+    
+    // Exit immediately for uncaught exceptions
+    process.exit(1);
   });
-  
-  // Exit immediately for uncaught exceptions
+
+  // Export the server for testing purposes (optional)
+  module.exports = server;
+
+}).catch((error) => {
+  // Handle database initialization failure
+  logger.error('Failed to start server due to database initialization error', { 
+    error: error.message 
+  });
   process.exit(1);
 });
-
-module.exports = server;

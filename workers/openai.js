@@ -18,15 +18,13 @@ function parseJSON(raw, fallback = {}) {
   }
 }
 
-
-
 // Together AI function
 async function callTogetherAI(messages) {
   try {
     const response = await axios.post(
       'https://api.together.xyz/v1/chat/completions',
       {
-        model: 'Qwen/Qwen2.5-72B-Instruct-Turbo', // Fast, reliable model
+        model: 'Qwen/Qwen2.5-72B-Instruct-Turbo',
         messages: messages,
         temperature: 0.1,
         max_tokens: 1000
@@ -160,25 +158,24 @@ const worker = new Worker(
           response: 'Hi! Try "find jobs in Lagos" or "help" for commands.'
         };
 
-      }
-      else if (job.name === 'analyze-cv') {
-  const cvText = job.data.cvText;
-  const jobTitle = job.data.jobTitle || null;
-  
-  if (!cvText) {
-    return {
-      skills: 0, experience: 0, education: 0,
-      summary: 'No CV text provided for analysis'
-    };
-  }
+      } else if (job.name === 'analyze-cv') {
+        const cvText = job.data.cvText;
+        const jobTitle = job.data.jobTitle || null;
+        
+        if (!cvText) {
+          return {
+            skills: 0, experience: 0, education: 0,
+            summary: 'No CV text provided for analysis'
+          };
+        }
 
-  // Try AI analysis first
-  if (process.env.TOGETHER_API_KEY) {
-    try {
-      const prompt = [
-        {
-          role: 'system',
-          content: `You are a Nigerian HR expert. Analyze this CV and return JSON:
+        // Try AI analysis first
+        if (process.env.TOGETHER_API_KEY) {
+          try {
+            const prompt = [
+              {
+                role: 'system',
+                content: `You are a Nigerian HR expert. Analyze this CV and return JSON:
 {
   "overall_score": number (0-100),
   "job_match_score": number (0-100),
@@ -196,38 +193,29 @@ const worker = new Worker(
   "cv_quality": "Excellent|Good|Average|Poor"
 }
 
-Focus on Nigerian job market standards. Analyze:
-- How well the CV matches the specific job requirements
-- Skills relevance to the position
-- Experience level appropriateness
-- CV presentation quality
-- Professional development indicators
+Focus on Nigerian job market standards. DO NOT estimate salary ranges.`
+              },
+              { 
+                role: 'user', 
+                content: `Analyze this CV${jobTitle ? ` for ${jobTitle} position` : ''}:\n\n${cvText.substring(0, 3000)}` 
+              }
+            ];
 
-DO NOT estimate salary ranges. Focus only on job fit and CV quality.`
-        },
-        { 
-          role: 'user', 
-          content: `Analyze this CV${jobTitle ? ` for ${jobTitle} position` : ''}:\n\n${cvText.substring(0, 3000)}` 
+            const result = await callTogetherAI(prompt);
+            const analysis = parseJSON(result, null);
+            
+            if (analysis && analysis.overall_score) {
+              return analysis;
+            }
+          } catch (error) {
+            logger.error('AI CV analysis failed', { error: error.message });
+          }
         }
-      ];
 
-      const result = await callTogetherAI(prompt);
-      const analysis = parseJSON(result, null);
-      
-      if (analysis && analysis.overall_score) {
-        return analysis;
-      }
-    } catch (error) {
-      logger.error('AI CV analysis failed', { error: error.message });
-    }
-  }
+        // Fallback analysis
+        return performFallbackCVAnalysis(cvText, jobTitle);
 
-  // Fallback analysis using pattern matching
-  return performFallbackCVAnalysis(cvText, jobTitle);
-}
-  } // <-- Close the 'if (job.name === 'analyze-cv')' block
-
-} else if (job.name === 'generate-cover-letter') {
+      } else if (job.name === 'generate-cover-letter') {
         const cvText = job.data.cvText;
         
         if (process.env.TOGETHER_API_KEY) {
@@ -243,7 +231,7 @@ DO NOT estimate salary ranges. Focus only on job fit and CV quality.`
             const result = await callTogetherAI(prompt);
             return result;
           } catch (error) {
-            // Fallback cover letter
+            logger.warn('Cover letter generation failed, using fallback');
           }
         }
 
@@ -267,19 +255,15 @@ Best regards,
   { connection: redis, concurrency: 3 }
 );
 
-module.exports = worker;  },
-  { connection: redis, concurrency: 3 }
-);
-
-// Updated fallback CV analysis function (no salary)
+// Fallback CV analysis function
 function performFallbackCVAnalysis(cvText, jobTitle = null) {
   const text = cvText.toLowerCase();
-  let overallScore = 50; // Base score
-  let jobMatchScore = 50; // Base job match
+  let overallScore = 50;
+  let jobMatchScore = 50;
 
   // Skills analysis
-  const techSkills = ['javascript', 'python', 'java', 'react', 'node', 'sql', 'html', 'css', 'php', 'angular', 'vue'];
-  const businessSkills = ['management', 'leadership', 'analysis', 'strategy', 'planning', 'communication'];
+  const techSkills = ['javascript', 'python', 'java', 'react', 'node', 'sql', 'html', 'css'];
+  const businessSkills = ['management', 'leadership', 'analysis', 'strategy', 'planning'];
   const foundSkills = [];
   const relevantSkills = [];
   
@@ -287,8 +271,7 @@ function performFallbackCVAnalysis(cvText, jobTitle = null) {
     if (text.includes(skill)) {
       foundSkills.push(skill);
       overallScore += 3;
-      // Check if skill is relevant to job title
-      if (jobTitle && (jobTitle.toLowerCase().includes('developer') || jobTitle.toLowerCase().includes('programmer'))) {
+      if (jobTitle && jobTitle.toLowerCase().includes('developer')) {
         relevantSkills.push(skill);
         jobMatchScore += 5;
       }
@@ -299,8 +282,7 @@ function performFallbackCVAnalysis(cvText, jobTitle = null) {
     if (text.includes(skill)) {
       foundSkills.push(skill);
       overallScore += 2;
-      // Check if skill is relevant to job title
-      if (jobTitle && (jobTitle.toLowerCase().includes('manager') || jobTitle.toLowerCase().includes('lead'))) {
+      if (jobTitle && jobTitle.toLowerCase().includes('manager')) {
         relevantSkills.push(skill);
         jobMatchScore += 4;
       }
@@ -314,16 +296,6 @@ function performFallbackCVAnalysis(cvText, jobTitle = null) {
   if (experienceYears >= 5) overallScore += 10;
   if (experienceYears >= 3) overallScore += 5;
 
-  // Job-specific experience matching
-  if (jobTitle) {
-    const jobKeywords = jobTitle.toLowerCase().split(' ');
-    jobKeywords.forEach(keyword => {
-      if (text.includes(keyword)) {
-        jobMatchScore += 8;
-      }
-    });
-  }
-
   // Education analysis
   let educationScore = 50;
   let educationLevel = 'Other';
@@ -336,7 +308,7 @@ function performFallbackCVAnalysis(cvText, jobTitle = null) {
     educationScore = 85;
     educationLevel = 'Master\'s';
     overallScore += 10;
-  } else if (text.includes('bachelor') || text.includes('bsc') || text.includes('ba ') || text.includes('beng')) {
+  } else if (text.includes('bachelor') || text.includes('bsc') || text.includes('ba ')) {
     educationScore = 75;
     educationLevel = 'Bachelor\'s';
     overallScore += 5;
@@ -348,7 +320,7 @@ function performFallbackCVAnalysis(cvText, jobTitle = null) {
   // CV quality assessment
   let cvQuality = 'Average';
   const hasContact = text.includes('@') || text.includes('email');
-  const hasPhone = text.includes('phone') || text.includes('mobile') || text.includes('tel');
+  const hasPhone = text.includes('phone') || text.includes('mobile');
   const hasProperLength = text.length > 500 && text.length < 5000;
   
   if (hasContact && hasPhone && hasProperLength && foundSkills.length >= 3) {
@@ -359,28 +331,19 @@ function performFallbackCVAnalysis(cvText, jobTitle = null) {
     cvQuality = 'Excellent';
     overallScore += 10;
   }
-  if (text.length < 300 || (!hasContact && !hasPhone)) {
-    cvQuality = 'Poor';
-    overallScore -= 10;
-  }
 
-  // Areas for improvement instead of red flags
-  const areasForImprovement = [];
-  if (text.length < 500) areasForImprovement.push('CV could be more detailed');
-  if (!hasContact) areasForImprovement.push('Missing contact email');
-  if (!hasPhone) areasForImprovement.push('Missing phone number');
-  if (foundSkills.length < 3) areasForImprovement.push('Could highlight more relevant skills');
-  if (experienceYears < 1) areasForImprovement.push('Consider adding internship or project experience');
-
-  // Strengths identification
+  // Strengths and areas for improvement
   const strengths = [];
+  const areasForImprovement = [];
+  
   if (foundSkills.length >= 5) strengths.push('Strong technical skill set');
   if (experienceYears >= 5) strengths.push('Extensive professional experience');
   if (educationScore >= 75) strengths.push('Strong educational background');
-  if (text.includes('award') || text.includes('certification')) strengths.push('Professional achievements');
-  if (cvQuality === 'Excellent') strengths.push('Well-structured CV presentation');
+  
+  if (text.length < 500) areasForImprovement.push('CV could be more detailed');
+  if (!hasContact) areasForImprovement.push('Missing contact email');
+  if (foundSkills.length < 3) areasForImprovement.push('Could highlight more skills');
 
-  // Overall recommendation
   let recommendation = 'Average';
   if (overallScore >= 80) recommendation = 'Strong';
   else if (overallScore >= 65) recommendation = 'Good';
@@ -405,12 +368,10 @@ function performFallbackCVAnalysis(cvText, jobTitle = null) {
 }
 
 function extractExperienceYears(text) {
-  // Look for experience patterns
   const patterns = [
     /(\d+)\s*years?\s*(of\s*)?experience/i,
     /(\d+)\s*yrs?\s*(of\s*)?experience/i,
-    /experience.*?(\d+)\s*years?/i,
-    /(\d+)\s*years?\s*in\s*/i
+    /experience.*?(\d+)\s*years?/i
   ];
 
   for (const pattern of patterns) {
@@ -420,7 +381,6 @@ function extractExperienceYears(text) {
     }
   }
 
-  // Fallback: estimate from job positions
   const jobCount = (text.match(/\b(19|20)\d{2}\b/g) || []).length;
   return Math.max(Math.floor(jobCount / 2), 0);
 }
