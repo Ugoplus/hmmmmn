@@ -36,3 +36,15 @@ UPDATE jobs
 SET expires_at = NOW() + INTERVAL '30 days',
     scraped_at = NOW() - INTERVAL '1 day'
 WHERE expires_at IS NULL;
+
+
+CREATE TABLE IF NOT EXISTS daily_usage (
+  user_identifier VARCHAR(255) PRIMARY KEY,
+  applications_remaining INTEGER DEFAULT 0,
+  usage_date DATE DEFAULT CURRENT_DATE,
+  total_applications_today INTEGER DEFAULT 0,
+  payment_status VARCHAR(50) DEFAULT 'pending',
+  payment_reference VARCHAR(255),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

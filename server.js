@@ -17,7 +17,7 @@ const redis = require('./config/redis');
 const app = express();
 const jobCleanup = require('./services/job-cleanup');
 const dbManager = require('./config/database');
-const dbManager = require('./config/database');
+
 
 let pool = null;
 
