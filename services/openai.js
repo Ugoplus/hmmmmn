@@ -1,4 +1,4 @@
-// services/openai.js - Optimized with enhanced pattern matching for partial queries
+// services/openai.js - Your EXACT reference + ONLY optimization features you requested
 
 const { Queue, QueueEvents } = require('bullmq');
 const crypto = require('crypto');
@@ -52,81 +52,6 @@ class AIService {
       totalRequests: 0
     };
     
-    // Define jobTypes and locations as class properties (extracted from matchCompleteJobSearch)
-    this.jobTypes = {
-      'developer': ['developer', 'programmer', 'coder', 'software', 'backend', 'frontend', 'fullstack'],
-      'designer': ['designer', 'ui', 'ux', 'graphic'],
-      'manager': ['manager', 'management', 'lead', 'supervisor'],
-      'analyst': ['analyst', 'analysis', 'data'],
-      'engineer': ['engineer', 'engineering'],
-      'marketing': ['marketing', 'marketer', 'digital marketing'],
-      'sales': ['sales', 'salesman', 'saleswoman'],
-      'teacher': ['teacher', 'tutor', 'instructor'],
-      'driver': ['driver', 'driving'],
-      'nurse': ['nurse', 'nursing'],
-      'doctor': ['doctor', 'medical']
-    };
-
-    this.locations = {
-      // Original major cities
-      'lagos': 'Lagos',
-      'abuja': 'Abuja',
-      'port harcourt': 'Port Harcourt',
-      'portharcourt': 'Port Harcourt',
-      'remote': 'Remote',
-      
-      // All 36 Nigerian States
-      'abia': 'Abia',
-      'adamawa': 'Adamawa', 
-      'akwa ibom': 'Akwa Ibom',
-      'anambra': 'Anambra',
-      'bauchi': 'Bauchi',
-      'bayelsa': 'Bayelsa',
-      'benue': 'Benue',
-      'borno': 'Borno',
-      'cross river': 'Cross River',
-      'delta': 'Delta',
-      'ebonyi': 'Ebonyi',
-      'edo': 'Edo',
-      'ekiti': 'Ekiti',
-      'enugu': 'Enugu',
-      'gombe': 'Gombe',
-      'imo': 'Imo',
-      'jigawa': 'Jigawa',
-      'kaduna': 'Kaduna',
-      'kano': 'Kano',
-      'katsina': 'Katsina',
-      'kebbi': 'Kebbi',
-      'kogi': 'Kogi',
-      'kwara': 'Kwara',
-      'niger': 'Niger',
-      'ogun': 'Ogun',
-      'ondo': 'Ondo',
-      'osun': 'Osun',
-      'oyo': 'Oyo',
-      'plateau': 'Plateau',
-      'rivers': 'Rivers',
-      'sokoto': 'Sokoto',
-      'taraba': 'Taraba',
-      'yobe': 'Yobe',
-      'zamfara': 'Zamfara',
-      
-      // FCT
-      'fct': 'FCT',
-      
-      // Major cities for convenience
-      'ibadan': 'Oyo',          // Ibadan is in Oyo state
-      'jos': 'Plateau',         // Jos is in Plateau state
-      'kano city': 'Kano',      // Kano city in Kano state
-      'benin': 'Edo',           // Benin City is in Edo state
-      'calabar': 'Cross River', // Calabar is in Cross River
-      'uyo': 'Akwa Ibom',       // Uyo is in Akwa Ibom
-      'warri': 'Delta',         // Warri is in Delta state
-      'maiduguri': 'Borno',     // Maiduguri is in Borno
-      'ilorin': 'Kwara',        // Ilorin is in Kwara
-      'abeokuta': 'Ogun'        // Abeokuta is in Ogun
-    };
-    
     setInterval(() => this.cleanCache(), 60000);
     setInterval(() => this.logMetrics(), 300000); // Log metrics every 5 minutes
   }
@@ -152,9 +77,9 @@ class AIService {
         return simpleResult;
       }
 
-      // LEVEL 3: Smart patterns (enhanced for partials)
-      const patternResult = this.parseSmartPatterns(message, userContext);
-      if (patternResult) {
+      // LEVEL 3: Smart patterns (NEW - for better performance)
+         const patternResult = this.parseSmartPatterns(message, userContext);
+        if (patternResult) {
         this.metrics.patternMatches++;
         logger.info('Smart pattern match', { identifier, action: patternResult.action });
         this.setCache(cacheKey, patternResult);
@@ -186,131 +111,141 @@ class AIService {
     }
   }
 
-  // Enhanced: Handle partial queries with session inference
-  parseSmartPatterns(message, userContext = null) {
-    const text = message.toLowerCase().trim();
-    
-    
-    const sessionData = userContext?.sessionData || {};
-    
-    const singleJobTypes = ['developer', 'engineer', 'marketing', 'sales', 'manager', 'teacher', 'nurse', 'doctor'];
-    
-    if (singleJobTypes.includes(text)) {
-      
-      if (sessionData.lastLocation) {
-        return {
-          action: 'search_jobs',
-          filters: {
-            title: text,
-            location: sessionData.lastLocation
-          }
-        };
-      }
-    }
-    
-    // NEW: Handle partial queries
-    const partialResult = this.matchPartialQuery(text, sessionData);
-    if (partialResult) {
-      return partialResult;
-    }
+  // NEW: Smart patterns for better performance (handles obvious cases fast)
 
-    // Continue with existing logic...
-    const completeSearch = this.matchCompleteJobSearch(text);
-    if (completeSearch) {
+parseSmartPatterns(message, userContext = null) {
+  const text = message.toLowerCase().trim();
+  
+  
+  const sessionData = userContext?.sessionData || {};
+  
+  const singleJobTypes = ['developer', 'engineer', 'marketing', 'sales', 'manager', 'teacher', 'nurse', 'doctor'];
+  
+  if (singleJobTypes.includes(text)) {
+    
+    if (sessionData.lastLocation) {
       return {
         action: 'search_jobs',
-        filters: completeSearch
-      };
-    }
-
-    // Rest of existing method...
-    return null;
-  }
-
-  // NEW: Match partial queries (job only or location only)
-  matchPartialQuery(text, sessionData) {
-    let detectedJob = null;
-    let detectedLoc = null;
-    let isRemote = false;
-
-    // Detect job type
-    for (const [type, keywords] of Object.entries(this.jobTypes)) {
-      if (keywords.some(keyword => text.includes(keyword))) {
-        detectedJob = type;
-        break;
-      }
-    }
-
-    // Detect location/remote
-    for (const [key, value] of Object.entries(this.locations)) {
-      if (text.includes(key)) {
-        detectedLoc = value;
-        if (key === 'remote') {
-          isRemote = true;
+        filters: {
+          title: text,
+          location: sessionData.lastLocation
         }
-        break;
-      }
-    }
-
-    // Partial: Job only → Infer loc from session or clarify
-    if (detectedJob && !detectedLoc) {
-      if (sessionData.lastLocation) {
-        return {
-          action: 'search_jobs',
-          filters: {
-            title: detectedJob,
-            location: sessionData.lastLocation,
-            remote: sessionData.lastLocation.toLowerCase() === 'remote'
-          }
-        };
-      }
-      return {
-        action: 'clarify',
-        response: `What location for ${detectedJob} jobs? 📍 Lagos, Abuja, or Remote?`,
-        requiresSpecificity: true
       };
     }
+  }
+  
 
-    // Partial: Location/remote only → Infer job from session or clarify
-    if (detectedLoc && !detectedJob) {
-      if (sessionData.lastJobType) {
-        return {
-          action: 'search_jobs',
-          filters: {
-            title: sessionData.lastJobType,
-            location: detectedLoc,
-            remote: isRemote
-          }
-        };
-      }
-      return {
-        action: 'clarify',
-        response: `What type of jobs in ${detectedLoc}? Developer, marketing, or sales?`,
-        requiresSpecificity: true
-      };
-    }
 
-    return null;
+
+
+  // Continue with existing logic...
+  const completeSearch = this.matchCompleteJobSearch(text);
+  if (completeSearch) {
+    return {
+      action: 'search_jobs',
+      filters: completeSearch
+    };
   }
 
-  // Existing: Match complete job searches (job + location)
+  // Rest of existing method...
+  return null;
+}
+
+
+
+
+
+  // NEW: Match complete job searches (job + location)
   matchCompleteJobSearch(text) {
+   const locations = {
+  // Original major cities
+  'lagos': 'Lagos',
+  'abuja': 'Abuja',
+  'port harcourt': 'Port Harcourt',
+  'portharcourt': 'Port Harcourt',
+  'remote': 'Remote',
+  
+  // All 36 Nigerian States
+  'abia': 'Abia',
+  'adamawa': 'Adamawa', 
+  'akwa ibom': 'Akwa Ibom',
+  'anambra': 'Anambra',
+  'bauchi': 'Bauchi',
+  'bayelsa': 'Bayelsa',
+  'benue': 'Benue',
+  'borno': 'Borno',
+  'cross river': 'Cross River',
+  'delta': 'Delta',
+  'ebonyi': 'Ebonyi',
+  'edo': 'Edo',
+  'ekiti': 'Ekiti',
+  'enugu': 'Enugu',
+  'gombe': 'Gombe',
+  'imo': 'Imo',
+  'jigawa': 'Jigawa',
+  'kaduna': 'Kaduna',
+  'kano': 'Kano',
+  'katsina': 'Katsina',
+  'kebbi': 'Kebbi',
+  'kogi': 'Kogi',
+  'kwara': 'Kwara',
+  'niger': 'Niger',
+  'ogun': 'Ogun',
+  'ondo': 'Ondo',
+  'osun': 'Osun',
+  'oyo': 'Oyo',
+  'plateau': 'Plateau',
+  'rivers': 'Rivers',
+  'sokoto': 'Sokoto',
+  'taraba': 'Taraba',
+  'yobe': 'Yobe',
+  'zamfara': 'Zamfara',
+  
+  // FCT
+  'fct': 'FCT',
+  
+  // Major cities for convenience
+  'ibadan': 'Oyo',          // Ibadan is in Oyo state
+  'jos': 'Plateau',         // Jos is in Plateau state
+  'kano city': 'Kano',      // Kano city in Kano state
+  'benin': 'Edo',           // Benin City is in Edo state
+  'calabar': 'Cross River', // Calabar is in Cross River
+  'uyo': 'Akwa Ibom',       // Uyo is in Akwa Ibom
+  'warri': 'Delta',         // Warri is in Delta state
+  'maiduguri': 'Borno',     // Maiduguri is in Borno
+  'ilorin': 'Kwara',        // Ilorin is in Kwara
+  'abeokuta': 'Ogun'        // Abeokuta is in Ogun
+};
+
+
+
+    const jobTypes = {
+      'developer': ['developer', 'programmer', 'coder', 'software'],
+      'designer': ['designer', 'ui', 'ux', 'graphic'],
+      'manager': ['manager', 'management', 'lead', 'supervisor'],
+      'analyst': ['analyst', 'analysis', 'data'],
+      'engineer': ['engineer', 'engineering'],
+      'marketing': ['marketing', 'marketer', 'digital marketing'],
+      'sales': ['sales', 'salesman', 'saleswoman'],
+      'teacher': ['teacher', 'tutor', 'instructor'],
+      'driver': ['driver', 'driving'],
+      'nurse': ['nurse', 'nursing'],
+      'doctor': ['doctor', 'medical']
+    };
+
     let filters = {};
     let hasLocation = false;
     let hasJobType = false;
 
-    for (const [key, value] of Object.entries(this.locations)) {
+    for (const [key, value] of Object.entries(locations)) {
       if (text.includes(key)) {
         filters.location = value;
         hasLocation = true;
-        if (key === 'remote') {
-          filters.remote = true;
-        }
         break;
       }
     }
 
-    for (const [type, keywords] of Object.entries(this.jobTypes)) {
+    for (const [type, keywords] of Object.entries(jobTypes)) {
       if (keywords.some(keyword => text.includes(keyword))) {
         filters.title = type;
         hasJobType = true;
@@ -390,6 +325,7 @@ class AIService {
       return this.generateIntelligentFallback(message);
     }
   }
+
   // YOUR EXISTING checkRateLimit method - UNCHANGED
   async checkRateLimit(identifier) {
     if (!identifier) return false;
@@ -679,4 +615,3 @@ Best regards,
 }
 
 module.exports = new AIService();
-
