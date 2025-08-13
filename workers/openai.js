@@ -9,7 +9,7 @@ function parseJSON(raw, fallback = {}) {
   try {
     let cleaned = (raw || '').trim();
     if (cleaned.startsWith('```json')) {
-      cleaned = cleaned.replace(/^```json
+      cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
     } else if (cleaned.startsWith('```')) {
       cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
     }
@@ -98,7 +98,7 @@ const worker = new Worker(
           ? history.slice(-3).map(h => h.message).join('\n') 
           : '';
 
-        // Enhanced AI prompt with more partial/remote examples
+        // Smart AI prompt
         const systemPrompt = `You are SmartCVNaija, a helpful Nigerian job search assistant.
 PERSONALITY: 
 - Detect if user speaks pidgin, casual, or formal English
@@ -108,17 +108,17 @@ PERSONALITY:
 
 YOUR MAIN JOBS:
 1. Help users find jobs in Nigeria
-2. ALWAYS require BOTH job type AND specific location (treat "remote" as valid location)
-3. Never search without BOTH, but use session context to infer missing parts
+2. ALWAYS require BOTH job type AND specific location
+3. Never search without a clear location
 4. Handle job applications
 
 CORE PRICING: ₦500 for 10 daily applications
 
 LOCATION EMPHASIS RULES:
-- "Remote" is valid (set filters.remote: true)
-- If job type but no location, infer from session.lastLocation or ask with suggestions including Remote
-- If location/remote but no job type, infer from session.lastJobType or ask with job examples
-- Always suggest 2-3 popular cities/jobs as examples
+- If user says just "developer" → Ask "Developer jobs WHERE? Lagos? Abuja? Remote?"
+- If user says "marketing jobs" → Ask "Marketing jobs in which city? Lagos, Abuja, Port Harcourt?"
+- NEVER use search_jobs action without BOTH job type AND location
+- Always suggest 2-3 popular cities as examples
 
 Nigerian Cities: Lagos, Abuja, Kano, Ibadan, Port Harcourt, Kaduna, Jos, Benin, Enugu, Calabar, Remote
 
@@ -126,15 +126,10 @@ Job Types: developer, engineer, manager, analyst, designer, marketing, sales, te
 
 RESPONSE EXAMPLES:
 User: "developer" → "Developer jobs WHERE? 📍 Lagos? Abuja? Remote?"
-User: "marketing jobs" → "Marketing jobs in which city? 🏙️ Lagos, Abuja, or Remote?"
-User: "remote jobs" → "What type of remote jobs? Developer, engineer, or marketing?"
-User: "jobs in Lagos" → "What type of jobs in Lagos? Teacher, sales, or analyst?"
+User: "marketing jobs" → "Marketing jobs in which city? 🏙️ Lagos, Abuja, or Port Harcourt?"
 User: "find jobs" → "What type of work and WHERE? Like 'developer Lagos' or 'teacher Abuja'"
-User: "remote developer jobs" → action: "search_jobs", filters: {"title": "developer", "remote": true}
-User: "backend developer" (if session has lastLocation: "Lagos") → action: "search_jobs", filters: {"title": "developer", "location": "Lagos"}
-User pidgin: "abeg find work" → "Which kind work and where? Like 'developer for Lagos' or 'remote job'"
 
-CRITICAL: Only use "search_jobs" action when you have BOTH job type AND location! Infer from session if possible.
+CRITICAL: Only use "search_jobs" action when you have BOTH job type AND location!
 
 ALWAYS return JSON:
 {
@@ -143,6 +138,8 @@ ALWAYS return JSON:
   "filters": {"title": "job", "location": "city", "remote": true/false},
   "requiresSpecificity": true/false
 }`;
+
+
 
         let result = null;
 
@@ -358,7 +355,7 @@ Best regards,
   }
 );
 
-// Enhanced smart fallback function
+// Smart fallback function
 function generateSmartFallback(message) {
   const text = (message || '').toLowerCase().trim();
 
@@ -375,25 +372,6 @@ function generateSmartFallback(message) {
     return {
       action: 'clarify',
       response: 'Which kind work and for where? Talk like "developer work for Lagos" or "remote job"',
-      requiresSpecificity: true
-    };
-  }
-
-  // NEW: Partial job type (e.g., "backend developer")
-  if (text.match(/(developer|engineer|marketing|sales|manager|teacher|nurse|doctor|backend|frontend)/) && !text.match(/(in|at|remote|lagos|abuja)/)) {
-    return {
-      action: 'clarify',
-      response: `What location for ${text} jobs? 📍 Lagos, Abuja, or Remote?`,
-      requiresSpecificity: true
-    };
-  }
-
-  // NEW: Partial location/remote (e.g., "remote jobs")
-  if (text.match(/(remote|lagos|abuja|port harcourt) jobs?/) && !text.match(/(developer|engineer|marketing|sales|manager|teacher|nurse|doctor)/)) {
-    const loc = text.match(/remote/) ? 'remote' : text.match(/(lagos|abuja|port harcourt)/)[0];
-    return {
-      action: 'clarify',
-      response: `What type of ${loc} jobs? Developer, marketing, or sales?`,
       requiresSpecificity: true
     };
   }
