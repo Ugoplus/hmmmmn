@@ -39,7 +39,9 @@ if (telegramToken && telegramToken.trim() !== '' && telegramToken !== 'your-tele
 } else {
   logger.info('Telegram bot not initialized - no valid token provided');
 }
+
 let pool = null;
+
 class CVJobMatchingBot {
   
   // ================================
@@ -93,6 +95,117 @@ class CVJobMatchingBot {
     `, [identifier, today]);
   }
 
+
+   async getSessionData(identifier) {
+  try {
+    const sessionData = await redis.get(`session:${identifier}`);
+    
+    if (!sessionData) {
+      const newSession = {
+        lastLocation: null,
+        lastJobType: null,
+        searchHistory: [],
+        preferences: {
+          preferredCities: [],
+          jobTypes: []
+        },
+        createdAt: new Date().toISOString(),
+        lastActive: new Date().toISOString()
+      };
+      
+      await this.saveSessionData(identifier, newSession);
+      return newSession;
+    }
+    
+    const parsed = JSON.parse(sessionData);
+    parsed.lastActive = new Date().toISOString();
+    await this.saveSessionData(identifier, parsed);
+    
+    return parsed;
+  } catch (error) {
+    logger.error('Error getting session data', { identifier, error: error.message });
+    return this.getDefaultSession();
+  }
+}
+
+
+async saveSessionData(identifier, sessionData) {
+  try {
+    await redis.set(
+      `session:${identifier}`, 
+      JSON.stringify(sessionData), 
+      'EX', 
+      86400 * 7
+    );
+  } catch (error) {
+    logger.error('Error saving session data', { identifier, error: error.message });
+  }
+}
+
+
+
+
+getDefaultSession() {
+  return {
+    lastLocation: null,
+    lastJobType: null,
+    searchHistory: [],
+    preferences: {
+      preferredCities: [],
+      jobTypes: []
+    },
+    createdAt: new Date().toISOString(),
+    lastActive: new Date().toISOString()
+  };
+}
+
+
+
+
+async updateSessionContext(identifier, updates) {
+  try {
+    const sessionData = await this.getSessionData(identifier);
+    
+    if (updates.location) {
+      sessionData.lastLocation = updates.location;
+      
+      if (!sessionData.preferences.preferredCities.includes(updates.location)) {
+        sessionData.preferences.preferredCities.push(updates.location);
+        if (sessionData.preferences.preferredCities.length > 3) {
+          sessionData.preferences.preferredCities.shift();
+        }
+      }
+    }
+    
+    if (updates.jobType) {
+      sessionData.lastJobType = updates.jobType;
+      
+      if (!sessionData.preferences.jobTypes.includes(updates.jobType)) {
+        sessionData.preferences.jobTypes.push(updates.jobType);
+        if (sessionData.preferences.jobTypes.length > 3) {
+          sessionData.preferences.jobTypes.shift();
+        }
+      }
+    }
+    
+    if (updates.search) {
+      sessionData.searchHistory.unshift(updates.search);
+      if (sessionData.searchHistory.length > 10) {
+        sessionData.searchHistory = sessionData.searchHistory.slice(0, 10);
+      }
+    }
+    
+    sessionData.lastActive = new Date().toISOString();
+    await this.saveSessionData(identifier, sessionData);
+    
+    return sessionData;
+  } catch (error) {
+    logger.error('Error updating session context', { identifier, error: error.message });
+    return await this.getSessionData(identifier);
+  }
+}
+
+
   async initiateDailyPayment(identifier) {
     const email = await redis.get(`email:${identifier}`) || `${identifier}@example.com`;
     const reference = `daily_${uuidv4()}_${identifier}`;
@@ -128,85 +241,130 @@ class CVJobMatchingBot {
   // MESSAGE HANDLERS
   // ================================
   async handleWhatsAppMessage(phone, message, file = null) {
-  try {
-    if (file) {
-      const usage = await this.checkDailyUsage(phone);
-      if (usage.needsPayment) {
-        const paymentUrl = await this.initiateDailyPayment(phone);
-        return this.sendWhatsAppMessage(phone, 
-          `💰 Daily Payment Required\n\nGet 10 job applications for ₦500!\n\nPay here: ${paymentUrl}`
-        );
-      }
-      
-      if (file.buffer.length > 5 * 1024 * 1024) {
-        return this.sendWhatsAppMessage(phone, 
-          '❌ File too large. Please upload a CV smaller than 5MB.'
-        );
-      }
-      
-      const job = await cvQueue.add('process-cv', { 
-        file: {
-          buffer: file.buffer,
-          originalname: file.originalname,
-          mimetype: file.mimetype
-        }, 
-        identifier: phone 
-      });
-      
-      const cvText = await job.waitUntilFinished(cvQueue);
-      
-      await redis.set(`cv:${phone}`, cvText, 'EX', 86400);
-      await redis.set(`email:${phone}`, file.email || `hr@smartcvnaija.com.ng`, 'EX', 86400);
-      await redis.set(`state:${phone}`, 'awaiting_cover_letter', 'EX', 86400);
-      
-      const updatedUsage = await this.checkDailyUsage(phone);
-      return this.sendWhatsAppMessage(phone, 
-        `✅ CV uploaded successfully!\n\n📊 Applications remaining: ${updatedUsage.remaining}/10\n\n✍️ Send a cover letter or reply "generate"`
-      );
-    }
-
-    if (!message || typeof message !== 'string') {
-      return this.sendWhatsAppMessage(phone, 
-        '❓ Please try again.'
-      );
-    }
-
-    const state = await redis.get(`state:${phone}`);
-
-    if (state === 'awaiting_cover_letter') {
-      let coverLetter = message;
-      
-      if (message.toLowerCase().trim() === 'generate') {
-        const cvText = await redis.get(`cv:${phone}`);
-        if (!cvText) {
+    try {
+      if (file) {
+        const usage = await this.checkDailyUsage(phone);
+        if (usage.needsPayment) {
+          const paymentUrl = await this.initiateDailyPayment(phone);
           return this.sendWhatsAppMessage(phone, 
-            '❌ CV not found. Please upload your CV first.'
+            `💰 Daily Payment Required\n\nGet 10 job applications for ₦500!\n\nPay here: ${paymentUrl}`
           );
         }
-        coverLetter = await openaiService.generateCoverLetter(cvText);
+        
+        if (file.buffer.length > 5 * 1024 * 1024) {
+          return this.sendWhatsAppMessage(phone, 
+            '❌ File too large. Please upload a CV smaller than 5MB.'
+          );
+        }
+        
+        const job = await cvQueue.add('process-cv', { 
+          file: {
+            buffer: file.buffer,
+            originalname: file.originalname,
+            mimetype: file.mimetype
+          }, 
+          identifier: phone 
+        });
+        
+        const cvText = await job.waitUntilFinished(cvQueue);
+        
+        await redis.set(`cv:${phone}`, cvText, 'EX', 86400);
+        await redis.set(`email:${phone}`, file.email || `hr@smartcvnaija.com.ng`, 'EX', 86400);
+        await redis.set(`state:${phone}`, 'awaiting_cover_letter', 'EX', 86400);
+        
+        const updatedUsage = await this.checkDailyUsage(phone);
+        return this.sendWhatsAppMessage(phone, 
+          `✅ CV uploaded successfully!\n\n📊 Applications remaining: ${updatedUsage.remaining}/10\n\n✍️ Send a cover letter or reply "generate"`
+        );
       }
-      
-      await redis.set(`cover_letter:${phone}`, coverLetter, 'EX', 86400);
-      await redis.del(`state:${phone}`);
-      
-      const usage = await this.checkDailyUsage(phone);
-      return this.sendWhatsAppMessage(phone, 
-        `✅ Cover letter saved!\n\n📊 Applications remaining: ${usage.remaining}/10\n\n🔍 Search for jobs:\n• "find jobs in Lagos"`
-      );
-    }
 
-    const intent = await openaiService.parseJobQuery(message);
-    return await this.processIntent(phone, intent);
-    
-  } catch (error) {
-    logger.error('WhatsApp message processing error', { phone, error: error.message });
-    return this.sendWhatsAppMessage(phone, 
-      '❌ Sorry, an error occurred. Please try again.'
-    );
+      if (!message || typeof message !== 'string') {
+        return this.sendWhatsAppMessage(phone, 
+          '❓ Please try again.'
+        );
+      }
+
+      const state = await redis.get(`state:${phone}`);
+
+      if (state === 'awaiting_cover_letter') {
+        let coverLetter = message;
+        
+        if (message.toLowerCase().trim() === 'generate') {
+          const cvText = await redis.get(`cv:${phone}`);
+          if (!cvText) {
+            return this.sendWhatsAppMessage(phone, 
+              '❌ CV not found. Please upload your CV first.'
+            );
+          }
+          coverLetter = await openaiService.generateCoverLetter(cvText);
+        }
+        
+        await redis.set(`cover_letter:${phone}`, coverLetter, 'EX', 86400);
+        await redis.del(`state:${phone}`);
+        
+        const usage = await this.checkDailyUsage(phone);
+        return this.sendWhatsAppMessage(phone, 
+          `✅ Cover letter saved!\n\n📊 Applications remaining: ${usage.remaining}/10\n\n🔍 Search for jobs:\n• "find jobs in Lagos"`
+        );
+      }
+
+
+         const sessionData = await this.getSessionData(phone);
+         const userContext = {
+  platform: 'whatsapp',
+  sessionData: sessionData,
+  hasCV: await redis.exists(`cv:${phone}`),
+  hasCoverLetter: await redis.exists(`cover_letter:${phone}`),
+  currentState: await redis.get(`state:${phone}`) || 'idle'
+};
+
+const intent = await openaiService.parseJobQuery(message, phone, {
+  platform: 'whatsapp',
+  sessionData: sessionData,
+  hasCV: await redis.exists(`cv:${phone}`),
+  hasCoverLetter: await redis.exists(`cover_letter:${phone}`),
+  currentState: await redis.get(`state:${phone}`) || 'idle'
+});
+
+
+
+// Update session based on intent
+if (intent.filters) {
+  const updates = {};
+  
+  if (intent.filters.location) {
+    updates.location = intent.filters.location;
+  }
+  
+  if (intent.filters.title) {
+    updates.jobType = intent.filters.title;
+  }
+  
+  if (intent.action === 'search_jobs') {
+    updates.search = {
+      query: message,
+      filters: intent.filters,
+      timestamp: new Date().toISOString()
+    };
+  }
+  
+  if (Object.keys(updates).length > 0) {
+    await this.updateSessionContext(phone, updates);
   }
 }
 
-     
+
+      return await this.processIntent(phone, intent);
+
+      
+    } catch (error) {
+      logger.error('WhatsApp message processing error', { phone, error: error.message });
+      return this.sendWhatsAppMessage(phone, 
+        '❌ Sorry, an error occurred. Please try again.'
+      );
+    }
+  }
+
   async handleTelegramMessage(chatId, message, file = null) {
     try {
       if (file) {
@@ -263,8 +421,19 @@ class CVJobMatchingBot {
         );
       }
 
-      const intent = await openaiService.parseJobQuery(message);
-      return await this.processIntent(chatId, intent);
+       const sessionData = await redis.get(`session:${chatId}`);
+       const userContext = sessionData ? JSON.parse(sessionData) : {};
+
+const intent = await openaiService.parseJobQuery(message, chatId, {
+  platform: 'telegram',
+  sessionData: userContext,
+  hasCV: await redis.exists(`cv:${chatId}`),
+  hasCoverLetter: await redis.exists(`cover_letter:${chatId}`),
+  currentState: await redis.get(`state:${chatId}`) || 'idle'
+});
+
+return await this.processIntent(chatId, intent);
+
     } catch (error) {
       logger.error('Telegram message processing error', { chatId, error });
       return this.sendTelegramMessage(chatId, 'Sorry, an error occurred. Please try again.');
@@ -275,49 +444,41 @@ class CVJobMatchingBot {
   // INTENT PROCESSING
   // ================================
 
- async processIntent(identifier, intent) {
+async processIntent(identifier, intent) {
   try {
-    // Handle special commands first
-    if (
-      intent.action === 'reset' ||
-      (intent.response && intent.response.toLowerCase().includes('reset'))
-    ) {
-      return await this.handleResetCommand(identifier);
-    }
+    logger.info('Processing intent', { 
+      identifier, 
+      action: intent?.action, 
+      hasResponse: !!intent?.response 
+    });
 
-    switch (intent.action) {
-      case 'greeting': {
-        await this.setUserState(identifier, 'idle');
-        const usage = await this.checkDailyUsage(identifier);
-        return this.sendMessage(
-          identifier,
-          `👋 Welcome to SmartCVNaija!\n\n📊 Today's Usage:\n• Applications sent: ${usage.totalToday}/10\n• Remaining: ${usage.remaining}/10\n\n💬 I can help you:\n• "find jobs in Lagos"\n• "remote developer jobs"\n• Upload CV (PDF/DOCX)\n• "help" for more options\n• "reset" to clear session`
-        );
+    // ONLY handle actions that require complex business logic
+    switch (intent?.action) {
+      
+      case 'reset': {
+        return await this.handleResetCommand(identifier);
       }
 
-      case 'help': {
-        return this.sendMessage(
-          identifier,
-          `🆘 **SmartCVNaija Commands**\n\n🔍 **Job Search:**\n• "find jobs in Lagos"\n• "developer jobs"\n• "remote marketing jobs"\n\n📄 **CV & Applications:**\n• Upload your CV (PDF/DOCX)\n• "apply all" - Apply to all jobs\n• "apply 1,2,3" - Apply to specific jobs\n\n💰 **Pricing:** ₦500 for 10 applications daily\n\n🔄 **Other Commands:**\n• "reset" - Clear your session\n• "status" - Check your usage\n\n❓ Need help? Just ask!`
-        );
-      }
+case 'search_jobs': {
+  // Check if we have filters and they're complete
+  if (intent.filters && Object.keys(intent.filters).length > 0) {
+    await this.setUserState(identifier, 'browsing_jobs');
+    const searchResult = await this.searchJobs(identifier, intent.filters);
+    // NEW: Update session after search
+    await this.updateSessionContext(identifier, {
+      location: intent.filters.location || (intent.filters.remote ? 'Remote' : null),
+      jobType: intent.filters.title
+    });
+    return searchResult;
+  }
+  
+  // If no filters or incomplete, ask for more info
+  return this.sendMessage(identifier, 
+    'Please specify both job type AND location.\n\nExample: "developer jobs Lagos" or "teacher Abuja"'
+  );
+}
 
-      case 'status': {
-        const currentUsage = await this.checkDailyUsage(identifier);
-        const userState = await this.getUserState(identifier);
-        const hasCV = await redis.exists(`cv:${identifier}`);
-        const hasCoverLetter = await redis.exists(`cover_letter:${identifier}`);
 
-        return this.sendMessage(
-          identifier,
-          `📊 **Your SmartCVNaija Status**\n\n📈 **Usage:**\n• Applications today: ${currentUsage.totalToday}/10\n• Remaining: ${currentUsage.remaining}/10\n• Payment status: ${currentUsage.needsPayment ? '⏳ Required' : '✅ Active'}\n\n📄 **Your Data:**\n• CV uploaded: ${hasCV ? '✅ Yes' : '❌ No'}\n• Cover letter: ${hasCoverLetter ? '✅ Ready' : '❌ Needed'}\n• Current state: ${userState}\n\n💡 ${hasCV ? 'Ready to apply to jobs!' : 'Upload your CV to get started'}`
-        );
-      }
-
-      case 'search_jobs': {
-        await this.setUserState(identifier, 'browsing_jobs');
-        return this.searchJobs(identifier, intent.filters);
-      }
 
       case 'apply_job': {
         await this.setUserState(identifier, 'applying');
@@ -326,323 +487,159 @@ class CVJobMatchingBot {
         return result;
       }
 
+           case 'status': {
+  const currentUsage = await this.checkDailyUsage(identifier);
+  const userState = await this.getUserState(identifier);
+  const hasCV = await redis.exists(`cv:${identifier}`);
+  const hasCoverLetter = await redis.exists(`cover_letter:${identifier}`);
+  const sessionData = await this.getSessionData(identifier);
+
+  let statusMessage = `📊 **Your SmartCVNaija Status**\n\n📈 **Usage:**\n• Applications today: ${currentUsage.totalToday}/10\n• Remaining: ${currentUsage.remaining}/10\n• Payment status: ${currentUsage.needsPayment ? '⏳ Required' : '✅ Active'}\n\n📄 **Your Data:**\n• CV uploaded: ${hasCV ? '✅ Yes' : '❌ No'}\n• Cover letter: ${hasCoverLetter ? '✅ Ready' : '❌ Needed'}\n• Current state: ${userState}`;
+
+  if (sessionData.lastLocation || sessionData.lastJobType) {
+    statusMessage += `\n\n🎯 **Your Preferences:**`;
+    if (sessionData.lastLocation) {
+      statusMessage += `\n• Last location: ${sessionData.lastLocation}`;
+    }
+    if (sessionData.lastJobType) {
+      statusMessage += `\n• Last job type: ${sessionData.lastJobType}`;
+    }
+  }
+
+  statusMessage += `\n\n💡 Type "reset" to clear your session`;
+
+  return this.sendMessage(identifier, statusMessage);
+}
+
+      case 'clarify': {
+        // NEW: Send response and update session with partial detection
+        if (intent.filters) { // If partial filters were detected
+          await this.updateSessionContext(identifier, {
+            location: intent.filters.location || (intent.filters.remote ? 'Remote' : null),
+            jobType: intent.filters.title
+          });
+        }
+        return this.sendMessage(identifier, intent.response);
+      }
+
       default: {
-        const usage = await this.checkDailyUsage(identifier);
-        return this.sendMessage(
-          identifier,
-          `ℹ️ I didn't understand that request.\n\n📊 Applications today: ${usage.totalToday}/10 | Remaining: ${usage.remaining}/10\n\n💬 **Try:**\n• "find jobs in Lagos"\n• "help" - Full command list\n• "status" - Check your usage\n• Upload your CV (PDF/DOCX)\n\nWhat can I help you with?`
-        );
+        if (intent?.response) {
+          return this.sendMessage(identifier, intent.response);
+        }
+        return this.sendMessage(identifier, 'I\'m here to help with job searches! Try "find developer jobs in Lagos" or "help" for commands.');
       }
     }
+    
   } catch (error) {
-    logger.error('Intent processing error', {
-      identifier,
-      intent: intent.action,
-      error: error.message
-    });
-
-    return this.sendMessage(
-      identifier,
-      '❌ Sorry, I encountered an error. Try "reset" to clear your session or "help" for commands.'
-    );
+    logger.error('Intent processing error', { identifier, action: intent?.action, error: error.message });
+    return this.sendMessage(identifier, '❌ Sorry, something went wrong. Please try again or type "help".');
   }
 }
 
-  async handleJobApplication(identifier, intent) {
-    const usage = await this.checkDailyUsage(identifier);
-
-    // Check if user needs to pay first
-    if (usage.needsPayment) {
-      let jobIds = [];
-      if (intent.applyAll) {
-        const lastJobsRaw = await redis.get(`last_jobs:${identifier}`);
-        if (lastJobsRaw) {
-          try {
-            jobIds = JSON.parse(lastJobsRaw).map(job => job.id);
-          } catch (e) {
-            logger.error('Failed to parse last_jobs', { lastJobsRaw, error: e.message });
-          }
-        }
-      } else if (intent.jobNumbers && intent.jobNumbers.length > 0) {
-        const lastJobsRaw = await redis.get(`last_jobs:${identifier}`);
-        if (lastJobsRaw) {
-          try {
-            const allJobs = JSON.parse(lastJobsRaw);
-            jobIds = intent.jobNumbers
-              .filter(num => num >= 1 && num <= allJobs.length)
-              .map(num => allJobs[num - 1].id);
-          } catch (e) {
-            logger.error('Failed to parse job numbers', { error: e.message });
-          }
-        }
-      }
-
-      await redis.set(`pending_jobs:${identifier}`, JSON.stringify(jobIds), 'EX', 86400);
-      const paymentUrl = await this.initiateDailyPayment(identifier);
-      
-      return this.sendMessage(identifier, 
-        `💰 Daily Payment Required\n\nGet 10 job applications for ₦500!\n\nAfter payment, I'll apply to your selected ${jobIds.length} job(s).\n\nPay here: ${paymentUrl}`
-      );
-    }
-
-    // Check CV and cover letter
-    const cvText = await redis.get(`cv:${identifier}`);
-    if (!cvText) {
-      return this.sendMessage(identifier, '📄 Please upload your CV (PDF or DOCX, max 5MB) first.');
-    }
-
-    const coverLetter = await redis.get(`cover_letter:${identifier}`);
-    if (!coverLetter) {
-      await redis.set(`state:${identifier}`, 'awaiting_cover_letter', 'EX', 86400);
-      return this.sendMessage(identifier, '✍️ Please provide a cover letter or reply "generate" to create one.');
-    }
-
-    // Determine which jobs to apply to
-    let jobIds = [];
-    if (intent.applyAll) {
-      const lastJobsRaw = await redis.get(`last_jobs:${identifier}`);
-      if (lastJobsRaw) {
-        try {
-          jobIds = JSON.parse(lastJobsRaw).map(job => job.id);
-        } catch (e) {
-          logger.error('Failed to parse last_jobs', { lastJobsRaw, error: e.message });
-        }
-      }
-    } else if (intent.jobNumbers && intent.jobNumbers.length > 0) {
-      const lastJobsRaw = await redis.get(`last_jobs:${identifier}`);
-      if (lastJobsRaw) {
-        try {
-          const allJobs = JSON.parse(lastJobsRaw);
-          jobIds = intent.jobNumbers
-            .filter(num => num >= 1 && num <= allJobs.length)
-            .map(num => allJobs[num - 1].id);
-        } catch (e) {
-          logger.error('Failed to parse job numbers', { error: e.message });
-        }
-      }
-    }
-
-    if (jobIds.length === 0) {
-      return this.sendMessage(identifier, '❌ No valid jobs selected. Please search for jobs first.');
-    }
-
-    // Check if user has enough applications remaining
-    if (usage.remaining < jobIds.length) {
-      return this.sendMessage(identifier, 
-        `❌ Not enough applications remaining!\n\n📊 You need: ${jobIds.length} applications\n📊 You have: ${usage.remaining} remaining\n\n💡 You can apply to ${usage.remaining} job(s) now, or wait until tomorrow for a fresh 10 applications.`
-      );
-    }
-
-    return this.applyToJobs(identifier, jobIds);
-  }
-
-  // ================================
-  // JOB APPLICATION PROCESSING
+// ================================
+  // JOB SEARCH METHOD
   // ================================
 
- async applyToJobs(identifier, jobIds) {
+async searchJobs(identifier, filters) {
   try {
-    // Deduct applications first
-    const usage = await this.deductApplications(identifier, jobIds.length);
+    const cacheKey = `jobs:${JSON.stringify(filters)}`;
+    const cached = await redis.get(cacheKey);
     
-    const cvText = await redis.get(`cv:${identifier}`);
-    const coverLetter = await redis.get(`cover_letter:${identifier}`);
-    const email = await redis.get(`email:${identifier}`);
-    const applications = [];
-
-    for (const jobId of jobIds) {
-      const { rows: [job] } = await dbManager.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
-      if (!job) continue;
-
-      // Get CV analysis with job title context
-      const analysis = await openaiService.analyzeCV(cvText, job.title);
-      const applicationId = uuidv4();
-      
-      // Store application with CV score (no salary)
-      await dbManager.query(
-        'INSERT INTO applications (id, user_identifier, job_id, cv_text, cv_score, usage_date) VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)',
-        [applicationId, identifier, jobId, cvText, JSON.stringify(analysis)]
-      );
-
-      // Send enhanced email with CV score
-      await this.sendEmailToRecruiter(job.email, job.title, cvText, coverLetter, email, identifier);
-      
-      applications.push({ 
-        id: applicationId, 
-        title: job.title, 
-        company: job.company,
-        overallScore: analysis.overall_score,
-        jobMatchScore: analysis.job_match_score
-      });
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (parsed && parsed.rows) {
+          await redis.set(`last_jobs:${identifier}`, JSON.stringify(parsed.rows), 'EX', 3600);
+          return this.sendMessage(identifier, parsed.response);
+        }
+      } catch (e) {
+        logger.error('Failed to parse cached jobs', { cached, error: e.message });
+      }
     }
 
-    if (applications.length === 0) {
-      return this.sendMessage(identifier, '❌ No valid jobs to apply to.');
-    }
+    const { title, location, company, remote } = filters;
+    
+    const query = `
+      SELECT * FROM jobs 
+      WHERE ($1::text IS NULL OR title ILIKE $1) 
+        AND ($2::text IS NULL OR location ILIKE $2) 
+        AND ($3::text IS NULL OR company ILIKE $3) 
+        AND ($4::boolean IS NULL OR is_remote = $4) 
+        AND (is_remote = true OR is_remote IS NULL) 
+        AND (expires_at IS NULL OR expires_at > NOW()) 
+      ORDER BY COALESCE(last_updated, scraped_at, NOW()) DESC 
+      LIMIT 10`;
 
-    const avgOverallScore = Math.round(applications.reduce((sum, app) => sum + app.overallScore, 0) / applications.length);
-    const avgMatchScore = Math.round(applications.reduce((sum, app) => sum + app.jobMatchScore, 0) / applications.length);
+    const { rows } = await dbManager.query(query, [
+      title ? `%${title}%` : null,
+      location ? `%${location}%` : null,
+      company ? `%${company}%` : null,
+      typeof remote === 'boolean' ? remote : null
+    ]);
+
+
+
+    if (rows.length === 0) {
+  const searchedLocation = filters.location || 'that location';
+  const searchedJob = filters.title || 'jobs';
+  
+  return this.sendMessage(identifier, 
+    `🔍 No ${searchedJob} jobs found in ${searchedLocation}\n\n💡 Try these popular cities:\n• Lagos (most jobs)\n• Abuja (government & tech)\n• Port Harcourt (oil & gas)\n\nOr search for "remote ${searchedJob} jobs"`
+  );
+}
+
+    // ✨ CLEAN NUMBERED JOB FORMATTING ✨
+    let response = `🔍 Found ${rows.length} ${filters.remote ? 'Remote ' : ''}Job${rows.length > 1 ? 's' : ''}\n\n`;
+
+    rows.forEach((job, index) => {
+      // Calculate days until expiry
+      let expiryText = '';
+      if (job.expires_at) {
+        const daysLeft = Math.ceil((new Date(job.expires_at) - new Date()) / (1000 * 60 * 60 * 24));
+        expiryText = `⏰ Expires in ${daysLeft} days`;
+      }
+
+      // Format salary
+      const salaryText = job.salary ? `💰 ${job.salary}` : '💰 Salary to be discussed';
+
+      // Use job number for application
+      const jobNumber = index + 1;
+
+      // Clean numbered format
+      response += `*${jobNumber}.* 🚀 *${job.title.toUpperCase()}*\n`;
+      response += `   🏢 ${job.company}\n`;
+      response += `   📍 ${job.is_remote ? '🌍 Remote work' : job.location}\n`;
+      response += `   ${salaryText}\n`;
+      
+      if (expiryText) {
+        response += `   ${expiryText}\n`;
+      }
+      
+      response += `   💬 Reply: "apply ${jobNumber}" to apply\n\n`;
+    });
+
+    // Add action instructions at the bottom
+    response += `*Quick Actions:*\n`;
+    response += `• "apply all" - Apply to all ${rows.length} jobs\n`;
+    response += `• Type "apply 1" for first job, "apply 2" for second job\n`;
     
-    const response = `✅ Successfully applied to ${applications.length} job(s):\n\n${applications.map(app => 
-      `• ${app.title} at ${app.company}\n  📊 CV Score: ${app.overallScore}/100 | Match: ${app.jobMatchScore}/100`
-    ).join('\n\n')}\n\n📈 Your Performance:\n• Average CV Score: ${avgOverallScore}/100\n• Average Job Match: ${avgMatchScore}/100\n\n📊 Applications remaining: ${usage.applications_remaining}/10\n📧 Recruiters have been notified with detailed analysis!`;
+    if (rows.length === 10) {
+      response += `• "more jobs" - See more results\n`;
+    }
     
+    response += `• Upload CV first if you haven't yet`;
+
+    await redis.set(`last_jobs:${identifier}`, JSON.stringify(rows), 'EX', 3600);
+    await redis.set(cacheKey, JSON.stringify({ response, rows }), 'EX', 3600);
+
     return this.sendMessage(identifier, response);
 
   } catch (error) {
-    logger.error('Job application error', { error: error.message });
-    throw error;
+    logger.error('Job search error', { identifier, filters, error: error.message });
+    return this.sendMessage(identifier, '❌ Job search failed. Please try again or contact support.');
   }
 }
 
-  async sendEmailToRecruiter(recruiterEmail, jobTitle, cvText, coverLetter, applicantEmail, identifier) {
-  try {
-    // Get CV analysis/score
-    const analysis = await openaiService.analyzeCV(cvText, jobTitle);
-    
-    // Get the stored CV file
-    const cvFilename = await redis.get(`cv_file:${identifier}`);
-    let cvBuffer = null;
-    
-    if (cvFilename && fs.existsSync(`./uploads/${cvFilename}`)) {
-      cvBuffer = fs.readFileSync(`./uploads/${cvFilename}`);
-    }
-
-    // Create comprehensive email with CV score (no salary)
-    const emailHTML = `
-      <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">
-        <h2 style="color: #2c3e50;">New Job Application - SmartCVNaija</h2>
-        
-        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <h3 style="color: #27ae60; margin-top: 0;">📊 CV Analysis</h3>
-          
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 15px 0;">
-            <div style="text-align: center; padding: 15px; background: white; border-radius: 6px;">
-              <div style="font-size: 24px; font-weight: bold; color: ${analysis.overall_score >= 70 ? '#27ae60' : analysis.overall_score >= 50 ? '#f39c12' : '#e74c3c'}">
-                ${analysis.overall_score}/100
-              </div>
-              <div style="font-size: 12px; color: #7f8c8d;">Overall Score</div>
-            </div>
-            <div style="text-align: center; padding: 15px; background: white; border-radius: 6px;">
-              <div style="font-size: 24px; font-weight: bold; color: ${analysis.job_match_score >= 70 ? '#27ae60' : analysis.job_match_score >= 50 ? '#f39c12' : '#e74c3c'}">
-                ${analysis.job_match_score}/100
-              </div>
-              <div style="font-size: 12px; color: #7f8c8d;">Job Match</div>
-            </div>
-          </div>
-          
-          <div style="display: flex; justify-content: space-between; margin: 10px 0; padding: 10px; background: white; border-radius: 6px;">
-            <strong>Recommendation:</strong> 
-            <span style="padding: 4px 12px; border-radius: 20px; color: white; font-weight: bold; background: ${analysis.recommendation === 'Strong' ? '#27ae60' : analysis.recommendation === 'Good' ? '#3498db' : analysis.recommendation === 'Average' ? '#f39c12' : '#e74c3c'}">
-              ${analysis.recommendation}
-            </span>
-          </div>
-          
-          <div style="display: flex; justify-content: space-between; margin: 10px 0;">
-            <strong>Experience:</strong> <span>${analysis.experience_years} years</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; margin: 10px 0;">
-            <strong>Education:</strong> <span>${analysis.education_level}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; margin: 10px 0;">
-            <strong>CV Quality:</strong> <span>${analysis.cv_quality}</span>
-          </div>
-        </div>
-
-        <div style="background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <h3 style="color: #2c3e50;">📋 Application Details</h3>
-          <p><strong>Position:</strong> ${jobTitle}</p>
-          <p><strong>Applicant Email:</strong> <a href="mailto:${applicantEmail}">${applicantEmail}</a></p>
-          <p><strong>Applied via:</strong> SmartCVNaija</p>
-        </div>
-
-        ${analysis.key_skills && analysis.key_skills.length > 0 ? `
-        <div style="background: #e8f5e8; border: 1px solid #27ae60; padding: 15px; border-radius: 8px; margin: 20px 0;">
-          <h4 style="color: #27ae60; margin-top: 0;">🛠️ Key Skills</h4>
-          <p>${analysis.key_skills.join(' • ')}</p>
-        </div>
-        ` : ''}
-
-        ${analysis.relevant_skills && analysis.relevant_skills.length > 0 ? `
-        <div style="background: #e3f2fd; border: 1px solid #2196f3; padding: 15px; border-radius: 8px; margin: 20px 0;">
-          <h4 style="color: #2196f3; margin-top: 0;">🎯 Job-Relevant Skills</h4>
-          <p>${analysis.relevant_skills.join(' • ')}</p>
-        </div>
-        ` : ''}
-
-        ${analysis.strengths && analysis.strengths.length > 0 ? `
-        <div style="background: #e8f5e8; border: 1px solid #27ae60; padding: 15px; border-radius: 8px; margin: 20px 0;">
-          <h4 style="color: #27ae60; margin-top: 0;">💪 Key Strengths</h4>
-          <ul style="margin: 0; padding-left: 20px;">
-            ${analysis.strengths.map(strength => `<li>${strength}</li>`).join('')}
-          </ul>
-        </div>
-        ` : ''}
-
-        ${analysis.areas_for_improvement && analysis.areas_for_improvement.length > 0 ? `
-        <div style="background: #fff3e0; border: 1px solid #ff9800; padding: 15px; border-radius: 8px; margin: 20px 0;">
-          <h4 style="color: #ff9800; margin-top: 0;">📈 Areas for Discussion</h4>
-          <ul style="margin: 0; padding-left: 20px;">
-            ${analysis.areas_for_improvement.map(area => `<li>${area}</li>`).join('')}
-          </ul>
-        </div>
-        ` : ''}
-
-        <div style="background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <h4 style="color: #2c3e50;">💼 Cover Letter</h4>
-          <p style="line-height: 1.6; color: #555;">${coverLetter.replace(/\n/g, '<br>')}</p>
-        </div>
-
-        <div style="background: #f1f2f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
-          <h4 style="color: #2c3e50;">📎 Attachments</h4>
-          <p>${cvBuffer ? '✅ CV attached to this email' : '❌ CV file not available - contact applicant directly'}</p>
-        </div>
-
-        <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
-        
-        <div style="text-align: center; color: #7f8c8d; font-size: 14px;">
-          <p>This application was intelligently processed by <a href="https://smartcvnaija.com.ng" style="color: #3498db;">SmartCVNaija</a></p>
-          <p>For support, contact: <a href="mailto:hr@smartcvnaija.com.ng">hr@smartcvnaija.com.ng</a></p>
-        </div>
-      </div>
-    `;
-
-    // Send email with enhanced subject line (no salary)
-    const emailOptions = {
-      from: 'SmartCVNaija <hr@smartcvnaija.com.ng>',
-      to: recruiterEmail,
-      subject: `New Application: ${jobTitle} | CV Score: ${analysis.overall_score}/100 | Match: ${analysis.job_match_score}/100 | ${analysis.recommendation}`,
-      html: emailHTML
-    };
-
-    if (cvBuffer) {
-      emailOptions.attachments = [
-        {
-          filename: `CV_${applicantEmail.split('@')[0]}.pdf`,
-          content: cvBuffer,
-          contentType: 'application/pdf'
-        }
-      ];
-    }
-
-    await transporter.sendMail(emailOptions);
-    
-    logger.info('Enhanced email sent to recruiter with CV score', { 
-      recruiterEmail, 
-      jobTitle,
-      overallScore: analysis.overall_score,
-      jobMatchScore: analysis.job_match_score,
-      recommendation: analysis.recommendation
-    });
-
-  } catch (error) {
-    logger.error('Failed to send enhanced recruiter email', { 
-      recruiterEmail, 
-      jobTitle,
-      error: error.message 
-    });
-  }
-}
 
   // ================================
   // PAYMENT PROCESSING
@@ -703,7 +700,7 @@ class CVJobMatchingBot {
     }
   }
 
-// ================================
+  // ================================
   // USER STATE MANAGEMENT
   // ================================
   
@@ -753,101 +750,192 @@ class CVJobMatchingBot {
     }
   }
 
-  async searchJobs(identifier, filters) {
-    try {
-      const cacheKey = `jobs:${JSON.stringify(filters)}`;
-      const cached = await redis.get(cacheKey);
-      
-      if (cached) {
-        try {
-          const parsed = JSON.parse(cached);
-          if (parsed && parsed.rows) {
-            await redis.set(`last_jobs:${identifier}`, JSON.stringify(parsed.rows), 'EX', 3600);
-            return this.sendMessage(identifier, parsed.response);
-          }
-        } catch (e) {
-          logger.error('Failed to parse cached jobs', { cached, error: e.message });
+   // Replace your searchJobs method in services/bot.js with this beautiful format:
+
+async searchJobs(identifier, filters) {
+  try {
+    const cacheKey = `jobs:${JSON.stringify(filters)}`;
+    const cached = await redis.get(cacheKey);
+    
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (parsed && parsed.rows) {
+          await redis.set(`last_jobs:${identifier}`, JSON.stringify(parsed.rows), 'EX', 3600);
+          return this.sendMessage(identifier, parsed.response);
         }
+      } catch (e) {
+        logger.error('Failed to parse cached jobs', { cached, error: e.message });
       }
-
-      const { title, location, company, remote } = filters;
-      
-      const query = `
-        SELECT * FROM jobs 
-        WHERE ($1::text IS NULL OR title ILIKE $1)
-        AND ($2::text IS NULL OR location ILIKE $2)
-        AND ($3::text IS NULL OR company ILIKE $3)
-        AND ($4::boolean IS NULL OR is_remote = $4)
-        AND (is_remote = true OR is_remote IS NULL)
-        ORDER BY COALESCE(last_updated, scraped_at, NOW()) DESC
-        LIMIT 10`;
-        
-      const { rows } = await dbManager.query(query, [
-        title ? `%${title}%` : null,
-        location ? `%${location}%` : null,
-        company ? `%${company}%` : null,
-        typeof remote === 'boolean' ? remote : null
-      ]);
-
-      if (rows.length === 0) {
-        return this.sendMessage(identifier, 
-          `🔍 **No Jobs Found**\n\nTry different search terms:\n• "developer jobs in Lagos"\n• "remote marketing jobs"\n• "manager positions"\n\n💡 **Tip:** Use broader terms for more results.`
-        );
-      }
-
-      const response = `🎯 **Found ${rows.length} Job${rows.length > 1 ? 's' : ''}:**\n\n${rows.map((job, i) => 
-        `**${i + 1}.** ${job.title}\n🏢 ${job.company}\n📍 ${job.location}${job.is_remote ? ' (Remote)' : ''}\n`
-      ).join('\n')}\n💬 **Apply Now:**\n• "apply all" - Apply to all jobs\n• "apply 1,3,5" - Apply to specific jobs\n• Upload CV first if needed`;
-
-      await redis.set(`last_jobs:${identifier}`, JSON.stringify(rows), 'EX', 3600);
-      await redis.set(cacheKey, JSON.stringify({ response, rows }), 'EX', 3600);
-      
-      return this.sendMessage(identifier, response);
-
-    } catch (error) {
-      logger.error('Job search error', { identifier, filters, error: error.message });
-      return this.sendMessage(identifier, 
-        '❌ Job search failed. Please try again or contact support.'
-      );
     }
-  }
 
+    const { title, location, company, remote } = filters;
+    
+    const query = `
+      SELECT * FROM jobs 
+      WHERE ($1::text IS NULL OR title ILIKE $1) 
+        AND ($2::text IS NULL OR location ILIKE $2) 
+        AND ($3::text IS NULL OR company ILIKE $3) 
+        AND ($4::boolean IS NULL OR is_remote = $4) 
+        AND (is_remote = true OR is_remote IS NULL) 
+        AND (expires_at IS NULL OR expires_at > NOW()) 
+      ORDER BY COALESCE(last_updated, scraped_at, NOW()) DESC 
+      LIMIT 10`;
+
+    const { rows } = await dbManager.query(query, [
+      title ? `%${title}%` : null,
+      location ? `%${location}%` : null,
+      company ? `%${company}%` : null,
+      typeof remote === 'boolean' ? remote : null
+    ]);
+
+
+
+    if (rows.length === 0) {
+  const searchedLocation = filters.location || 'that location';
+  const searchedJob = filters.title || 'jobs';
+  
+  return this.sendMessage(identifier, 
+    `🔍 No ${searchedJob} jobs found in ${searchedLocation}\n\n💡 Try these popular cities:\n• Lagos (most jobs)\n• Abuja (government & tech)\n• Port Harcourt (oil & gas)\n\nOr search for "remote ${searchedJob} jobs"`
+  );
+}
+
+    // ✨ CLEAN NUMBERED JOB FORMATTING ✨
+    let response = `🔍 Found ${rows.length} ${filters.remote ? 'Remote ' : ''}Job${rows.length > 1 ? 's' : ''}\n\n`;
+
+    rows.forEach((job, index) => {
+      // Calculate days until expiry
+      let expiryText = '';
+      if (job.expires_at) {
+        const daysLeft = Math.ceil((new Date(job.expires_at) - new Date()) / (1000 * 60 * 60 * 24));
+        expiryText = `⏰ Expires in ${daysLeft} days`;
+      }
+
+      // Format salary
+      const salaryText = job.salary ? `💰 ${job.salary}` : '💰 Salary to be discussed';
+
+      // Use job number for application
+      const jobNumber = index + 1;
+
+      // Clean numbered format
+      response += `*${jobNumber}.* 🚀 *${job.title.toUpperCase()}*\n`;
+      response += `   🏢 ${job.company}\n`;
+      response += `   📍 ${job.is_remote ? '🌍 Remote work' : job.location}\n`;
+      response += `   ${salaryText}\n`;
+      
+      if (expiryText) {
+        response += `   ${expiryText}\n`;
+      }
+      
+      response += `   💬 Reply: "apply ${jobNumber}" to apply\n\n`;
+    });
+
+    // Add action instructions at the bottom
+    response += `*Quick Actions:*\n`;
+    response += `• "apply all" - Apply to all ${rows.length} jobs\n`;
+    response += `• Type "apply 1" for first job, "apply 2" for second job\n`;
+    
+    if (rows.length === 10) {
+      response += `• "more jobs" - See more results\n`;
+    }
+    
+    response += `• Upload CV first if you haven't yet`;
+
+    await redis.set(`last_jobs:${identifier}`, JSON.stringify(rows), 'EX', 3600);
+    await redis.set(cacheKey, JSON.stringify({ response, rows }), 'EX', 3600);
+
+    return this.sendMessage(identifier, response);
+
+  } catch (error) {
+    logger.error('Job search error', { identifier, filters, error: error.message });
+    return this.sendMessage(identifier, '❌ Job search failed. Please try again or contact support.');
+  }
+}
 
 
   // ================================
   // MESSAGING METHODS
   // ================================
-async sendWhatsAppMessage(phone, message) {
+    async sendWhatsAppMessage(phone, message) {
   try {
-    // Fix: Convert phone to correct WHAPI chat_id format
+    // Format the phone number
     let chatId = phone;
-    if (!phone.includes('@')) {
+    
+    if (phone.includes('@s.whatsapp.net')) {
+      chatId = phone;
+    } else if (phone.includes('@')) {
+      const number = phone.split('@')[0];
+      chatId = `${number}@s.whatsapp.net`;
+    } else if (phone.startsWith('+')) {
+      chatId = `${phone.substring(1)}@s.whatsapp.net`;
+    } else {
       chatId = `${phone}@s.whatsapp.net`;
     }
     
-    console.log('=== Sending WhatsApp message ===', { chatId, message });
+    // Validate message
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      logger.error('Invalid message content', { message });
+      return false;
+    }
     
-    await axios.post('https://gate.whapi.cloud/messages/text', {
-      to: chatId,  // ✅ Use correct WHAPI format
-      body: message
-    }, {
-      headers: { 
-        Authorization: `Bearer ${config.get('whatsapp.token')}`,
-        'Content-Type': 'application/json'
+    // Step 1: Send typing indicator (fire and forget - don't await)
+    axios.post('https://gate.whapi.cloud/chats/typing', 
+      {
+        to: chatId,
+        typing: true
+      },
+      {
+        headers: { 
+          'Authorization': `Bearer ${config.get('whatsapp.token')}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 2000
       }
+    ).catch(err => {
+      // Ignore typing indicator errors
+      console.log('Typing indicator error (ignored):', err.message);
     });
     
-    console.log('=== WhatsApp message sent successfully ===');
-    return message;
-  } catch (error) {
-    console.error('=== WhatsApp send error ===', {
-      status: error.response?.status,
-      data: error.response?.data
+    // Step 2: Small delay for typing effect (1.5 seconds max)
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // Step 3: Send the actual message
+    const payload = {
+      to: chatId,
+      body: message.trim()
+    };
+    
+    const response = await axios.post('https://gate.whapi.cloud/messages/text', payload, {
+      headers: { 
+        'Authorization': `Bearer ${config.get('whatsapp.token')}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
     });
+    
+    if (response.status === 200 && response.data) {
+      logger.info('WhatsApp message sent with typing effect', { 
+        chatId, 
+        messageLength: message.length
+      });
+      return true;
+    } else {
+      logger.error('WhatsApp API returned non-200 status', { 
+        status: response.status, 
+        data: response.data 
+      });
+      return false;
+    }
+    
+  } catch (error) {
     logger.error('WhatsApp message failed', { phone, error: error.message });
-    throw error;
+    return false;
   }
 }
+
+
+
+
 
   async sendTelegramMessage(chatId, message) {
     if (!telegramBot) {
@@ -863,13 +951,17 @@ async sendWhatsAppMessage(phone, message) {
     }
   }
 
-  async sendMessage(identifier, message) {
-    if (identifier.startsWith('+')) {
-      return this.sendWhatsAppMessage(identifier, message);
-    } else {
-      return this.sendTelegramMessage(identifier, message);
-    }
+async sendMessage(identifier, message) {
+  if (identifier.startsWith('+') || /^\d+$/.test(identifier)) {
+    // Phone number - use WhatsApp
+    return this.sendWhatsAppMessage(identifier, message);
+  } else {
+    // Chat ID - use Telegram  
+    return this.sendTelegramMessage(identifier, message);
   }
+}
+
+
 
   // ================================
   // LEGACY COMPATIBILITY (REMOVE THESE METHODS)

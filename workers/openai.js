@@ -1,3 +1,5 @@
+// workers/openai.js - PURE AI: Smart conversation worker with Redis fallback
+require('dotenv').config();
 const { Worker } = require('bullmq');
 const axios = require('axios');
 const redis = require('../config/redis');
@@ -5,29 +7,34 @@ const logger = require('../utils/logger');
 
 function parseJSON(raw, fallback = {}) {
   try {
-    let cleaned = raw.trim();
+    let cleaned = (raw || '').trim();
     if (cleaned.startsWith('```json')) {
-      cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      cleaned = cleaned.replace(/^```json
     } else if (cleaned.startsWith('```')) {
       cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
     }
     return JSON.parse(cleaned);
   } catch (err) {
-    logger.error('JSON parse failed:', { raw, error: err.message });
+    logger.error('JSON parse failed', { raw: (raw || '').substring(0, 200), error: err.message });
     return fallback;
   }
 }
 
-// Together AI function
+// Smart AI conversation via Together API
 async function callTogetherAI(messages) {
   try {
+    if (!process.env.TOGETHER_API_KEY || process.env.TOGETHER_API_KEY.trim() === '') {
+      throw new Error('TOGETHER_API_KEY not configured');
+    }
+
     const response = await axios.post(
       'https://api.together.xyz/v1/chat/completions',
       {
         model: 'Qwen/Qwen2.5-72B-Instruct-Turbo',
         messages: messages,
-        temperature: 0.1,
-        max_tokens: 1000
+        temperature: 0.8,
+        max_tokens: 150,
+        top_p: 0.9
       },
       {
         headers: {
@@ -39,339 +46,429 @@ async function callTogetherAI(messages) {
     );
 
     return response.data.choices[0].message.content;
+    
   } catch (error) {
     logger.error('Together AI failed', { error: error.message });
     throw error;
   }
 }
 
-// Enhanced pattern matching
-function parseMessage(message) {
-  const text = message.toLowerCase().trim();
-
-  // Reset command
-  if (text.includes('reset') || text.includes('clear')) {
-    return { action: 'reset', response: 'Resetting your session...' };
-  }
-
-  // Status/usage check
-  if (text.includes('status') || text.includes('usage') || text === 'my status') {
-    return { action: 'status', response: 'Checking your status...' };
-  }
-
-  // Greetings
-  if (text.match(/^(hello|hi|hey|start|good morning|good afternoon|good evening)$/)) {
-    return { action: 'greeting', response: 'Hello! Welcome to SmartCVNaija!' };
-  }
-
-  // Help
-  if (text.includes('help') || text.includes('command')) {
-    return { action: 'help', response: 'Here are the available commands...' };
-  }
-
-  // Job applications
-  if (text.includes('apply')) {
-    const jobNumbers = [];
-    const matches = text.match(/\b(\d+)\b/g);
-    if (matches) {
-      jobNumbers.push(...matches.map(n => parseInt(n)).filter(n => n > 0 && n <= 10));
-    }
-
-    return {
-      action: 'apply_job',
-      applyAll: text.includes('all'),
-      jobNumbers: jobNumbers.length > 0 ? jobNumbers : null
-    };
-  }
-
-  // Job searches
-  if (text.includes('find') || text.includes('search') || text.includes('job') || text.includes('looking')) {
-    const filters = {};
-
-    // Nigerian locations
-    const locations = ['lagos', 'abuja', 'ibadan', 'kano', 'port harcourt', 'benin', 'jos', 'kaduna', 'rivers', 'edo', 'oyo'];
-    for (const location of locations) {
-      if (text.includes(location)) {
-        filters.location = location.charAt(0).toUpperCase() + location.slice(1);
-        break;
-      }
-    }
-
-    // Job types
-    if (text.includes('remote')) filters.remote = true;
-    if (text.includes('developer') || text.includes('programming')) filters.title = 'developer';
-    if (text.includes('designer')) filters.title = 'designer';
-    if (text.includes('manager')) filters.title = 'manager';
-    if (text.includes('marketing')) filters.title = 'marketing';
-    if (text.includes('sales')) filters.title = 'sales';
-
-    return {
-      action: 'search_jobs',
-      filters: filters
-    };
-  }
-
-  return { action: 'unknown' };
-}
-
 const worker = new Worker(
   'openai-tasks',
   async (job) => {
     try {
-      if (job.name === 'parse-query') {
-        const message = job.data.message;
+      // ---------- parse-query / ai-conversation handler ----------
+      if (job.name === 'parse-query' || job.name === 'ai-conversation') {
+        const { message, userId, userContext, platform, history, timestamp } = job.data;
         
-        // Try pattern matching first (faster)
-        const simpleResult = parseMessage(message);
-        if (simpleResult.action !== 'unknown') {
-          return simpleResult;
+        logger.info('AI handling query', { 
+          jobName: job.name,
+          userId, 
+          platform: platform || userContext?.platform,
+          messageLength: (message || '').length 
+        });
+
+        const normalized = (message || '').toLowerCase().trim();
+
+        // >>> EXACT quick-match the pidgin/vague pattern BEFORE any AI calls:
+        if (normalized.match(/^i (dey|wan|need) find job$/)) {
+          const result = {
+            action: 'clarify',
+            response: 'Which kind work and for where? Talk like "developer work for Lagos" or "remote job"',
+            requiresSpecificity: true
+          };
+
+          try {
+            if (job.id) {
+              await redis.set(`job-result:${job.id}`, JSON.stringify(result), 'EX', 30);
+              logger.info('Stored direct clarify result in Redis', { jobId: job.id });
+            }
+          } catch (err) {
+            logger.error('Failed to store direct clarify result in Redis', { error: err.message });
+          }
+
+          logger.info('Handled pidgin vague pattern directly in worker', { jobId: job.id });
+          return result;
         }
 
-        // Try Together AI for complex queries
-        if (process.env.TOGETHER_API_KEY) {
+        // Build conversation context from userContext or history
+        const conversationContext = userContext?.sessionData?.messageHistory 
+          ? userContext.sessionData.messageHistory.slice(-3).join('\n')
+          : history && history.length > 0 
+          ? history.slice(-3).map(h => h.message).join('\n') 
+          : '';
+
+        // Enhanced AI prompt with more partial/remote examples
+        const systemPrompt = `You are SmartCVNaija, a helpful Nigerian job search assistant.
+PERSONALITY: 
+- Detect if user speaks pidgin, casual, or formal English
+- Respond in SAME style they use
+- Be brief (max 30 words)
+- Be helpful and direct
+
+YOUR MAIN JOBS:
+1. Help users find jobs in Nigeria
+2. ALWAYS require BOTH job type AND specific location (treat "remote" as valid location)
+3. Never search without BOTH, but use session context to infer missing parts
+4. Handle job applications
+
+CORE PRICING: ₦500 for 10 daily applications
+
+LOCATION EMPHASIS RULES:
+- "Remote" is valid (set filters.remote: true)
+- If job type but no location, infer from session.lastLocation or ask with suggestions including Remote
+- If location/remote but no job type, infer from session.lastJobType or ask with job examples
+- Always suggest 2-3 popular cities/jobs as examples
+
+Nigerian Cities: Lagos, Abuja, Kano, Ibadan, Port Harcourt, Kaduna, Jos, Benin, Enugu, Calabar, Remote
+
+Job Types: developer, engineer, manager, analyst, designer, marketing, sales, teacher, accountant, nurse, doctor, lawyer
+
+RESPONSE EXAMPLES:
+User: "developer" → "Developer jobs WHERE? 📍 Lagos? Abuja? Remote?"
+User: "marketing jobs" → "Marketing jobs in which city? 🏙️ Lagos, Abuja, or Remote?"
+User: "remote jobs" → "What type of remote jobs? Developer, engineer, or marketing?"
+User: "jobs in Lagos" → "What type of jobs in Lagos? Teacher, sales, or analyst?"
+User: "find jobs" → "What type of work and WHERE? Like 'developer Lagos' or 'teacher Abuja'"
+User: "remote developer jobs" → action: "search_jobs", filters: {"title": "developer", "remote": true}
+User: "backend developer" (if session has lastLocation: "Lagos") → action: "search_jobs", filters: {"title": "developer", "location": "Lagos"}
+User pidgin: "abeg find work" → "Which kind work and where? Like 'developer for Lagos' or 'remote job'"
+
+CRITICAL: Only use "search_jobs" action when you have BOTH job type AND location! Infer from session if possible.
+
+ALWAYS return JSON:
+{
+  "action": "greeting|search_jobs|clarify|help|unknown",
+  "response": "your response in user's style",
+  "filters": {"title": "job", "location": "city", "remote": true/false},
+  "requiresSpecificity": true/false
+}`;
+
+        let result = null;
+
+        // Try AI if API key exists
+        if (process.env.TOGETHER_API_KEY && process.env.TOGETHER_API_KEY.trim() !== '') {
           try {
             const prompt = [
-              {
-                role: 'system',
-                content: `You are SmartCVNaija assistant. Parse queries and return JSON:
-{
-  "action": "search_jobs" | "apply_job" | "greeting" | "help" | "status" | "unknown",
-  "filters": {"title": "job title", "location": "Nigerian city", "remote": true/false},
-  "applyAll": true/false,
-  "jobNumbers": [1,2,3] or null,
-  "response": "helpful response"
-}`
-              },
-              { role: 'user', content: message }
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: `Previous context: ${conversationContext}\n\nCurrent message: ${message}` }
             ];
 
-            const result = await callTogetherAI(prompt);
-            return JSON.parse(result);
-          } catch (error) {
-            logger.warn('Together AI failed, using fallback');
+            const aiResponse = await callTogetherAI(prompt);
+            const parsedResult = parseJSON(aiResponse, null);
+            
+            if (parsedResult && parsedResult.action) {
+              result = parsedResult;
+            } else {
+              logger.warn('AI returned but JSON parse produced no valid action');
+            }
+          } catch (aiError) {
+            logger.error('AI processing failed, using fallback', { error: aiError.message });
           }
         }
 
-        // Fallback
-        return {
-          action: 'greeting',
-          response: 'Hi! Try "find jobs in Lagos" or "help" for commands.'
-        };
-
-      } else if (job.name === 'analyze-cv') {
-        const cvText = job.data.cvText;
-        const jobTitle = job.data.jobTitle || null;
-        
-        if (!cvText) {
-          return {
-            skills: 0, experience: 0, education: 0,
-            summary: 'No CV text provided for analysis'
-          };
+        // Fallback if AI fails or no API key
+        if (!result) {
+          result = generateSmartFallback(message);
         }
 
-        // Try AI analysis first
+        // Store result in Redis as fallback
+        if (result && job.id) {
+          try {
+            await redis.set(
+              `job-result:${job.id}`,
+              JSON.stringify(result),
+              'EX', 30  // Expire after 30 seconds
+            );
+            logger.info('Stored result in Redis fallback', { jobId: job.id });
+          } catch (err) {
+            logger.error('Failed to store result in Redis', { error: err.message });
+          }
+        }
+
+        return result;
+
+      // ---------- analyze-cv handler ----------
+      } else if (job.name === 'analyze-cv') {
+        const { cvText, jobTitle, userId } = job.data;
+        
+        if (!cvText) {
+          const emptyResult = {
+            overall_score: 0,
+            job_match_score: 0,
+            skills_score: 0,
+            experience_score: 0,
+            education_score: 0,
+            experience_years: 0,
+            summary: 'No CV text provided'
+          };
+
+          if (job.id) {
+            await redis.set(`job-result:${job.id}`, JSON.stringify(emptyResult), 'EX', 60);
+          }
+          return emptyResult;
+        }
+
+        let result = null;
+
         if (process.env.TOGETHER_API_KEY) {
           try {
             const prompt = [
               {
                 role: 'system',
-                content: `You are a Nigerian HR expert. Analyze this CV and return JSON:
-{
-  "overall_score": number (0-100),
-  "job_match_score": number (0-100),
-  "skills_score": number (0-100),
-  "experience_score": number (0-100),
-  "education_score": number (0-100),
-  "experience_years": number,
-  "key_skills": ["skill1", "skill2", "skill3"],
-  "relevant_skills": ["relevant1", "relevant2"],
-  "education_level": "Bachelor's|Master's|PhD|Diploma|Secondary|Other",
-  "summary": "brief professional summary",
-  "strengths": ["strength1", "strength2", "strength3"],
-  "areas_for_improvement": ["area1", "area2"],
-  "recommendation": "Strong|Good|Average|Weak",
-  "cv_quality": "Excellent|Good|Average|Poor"
-}
-
-Focus on Nigerian job market standards. DO NOT estimate salary ranges.`
+                content: `Analyze this CV for the Nigerian job market. Return JSON:
+                {
+                  "overall_score": number (0-100),
+                  "job_match_score": number (0-100),
+                  "skills_score": number (0-100),
+                  "experience_score": number (0-100),
+                  "education_score": number (0-100),
+                  "experience_years": number,
+                  "key_skills": ["skill1", "skill2", "skill3"],
+                  "relevant_skills": ["relevant1", "relevant2"],
+                  "education_level": "Bachelor's|Master's|PhD|Diploma|Other",
+                  "summary": "brief summary",
+                  "strengths": ["strength1", "strength2"],
+                  "areas_for_improvement": ["area1", "area2"],
+                  "recommendation": "Strong|Good|Average|Weak",
+                  "cv_quality": "Excellent|Good|Average|Poor"
+                }`
               },
               { 
                 role: 'user', 
-                content: `Analyze this CV${jobTitle ? ` for ${jobTitle} position` : ''}:\n\n${cvText.substring(0, 3000)}` 
+                content: `Analyze CV${jobTitle ? ` for ${jobTitle}` : ''}:\n\n${cvText.substring(0, 1500)}` 
               }
             ];
 
-            const result = await callTogetherAI(prompt);
-            const analysis = parseJSON(result, null);
+            const aiResponse = await callTogetherAI(prompt);
+            const analysis = parseJSON(aiResponse, null);
             
-            if (analysis && analysis.overall_score) {
-              return analysis;
+            if (analysis && typeof analysis.overall_score !== 'undefined') {
+              result = analysis;
+            } else {
+              logger.warn('AI CV analysis returned invalid structure');
             }
           } catch (error) {
             logger.error('AI CV analysis failed', { error: error.message });
           }
         }
 
-        // Fallback analysis
-        return performFallbackCVAnalysis(cvText, jobTitle);
+        // Use fallback if AI fails
+        if (!result) {
+          result = performBasicCVAnalysis(cvText, jobTitle);
+        }
 
+        // Store CV analysis result in Redis too
+        if (result && job.id) {
+          try {
+            await redis.set(
+              `job-result:${job.id}`,
+              JSON.stringify(result),
+              'EX', 60
+            );
+          } catch (err) {
+            logger.error('Failed to store CV analysis in Redis', { error: err.message });
+          }
+        }
+
+        return result;
+
+      // ---------- generate-cover-letter handler ----------
       } else if (job.name === 'generate-cover-letter') {
-        const cvText = job.data.cvText;
+        const { cvText, jobTitle, companyName } = job.data;
         
+        let result = null;
+
         if (process.env.TOGETHER_API_KEY) {
           try {
             const prompt = [
               {
                 role: 'system',
-                content: 'Write a professional Nigerian cover letter, 150-200 words.'
+                content: `Write a professional cover letter for a Nigerian job application. 150-200 words. Always use formal English.`
               },
-              { role: 'user', content: `Cover letter for: ${cvText.substring(0, 1000)}` }
+              { 
+                role: 'user', 
+                content: `Cover letter for ${jobTitle || 'position'}${companyName ? ` at ${companyName}` : ''} based on: ${cvText.substring(0, 1000)}` 
+              }
             ];
 
-            const result = await callTogetherAI(prompt);
-            return result;
+            result = await callTogetherAI(prompt);
           } catch (error) {
-            logger.warn('Cover letter generation failed, using fallback');
+            logger.warn('Cover letter generation failed', { error: error.message });
           }
         }
 
-        return `Dear Hiring Manager,
+        // Fallback cover letter
+        if (!result) {
+          result = `Dear Hiring Manager,
 
-I am writing to express my strong interest in this position. My background and experience make me well-suited for this role.
+I am writing to express my strong interest in the ${jobTitle || 'position'}${companyName ? ` at ${companyName}` : ''}.
 
-I am excited about the opportunity to contribute to your organization's success in Nigeria's dynamic market.
+My background and experience make me well-qualified for this role. I am confident that my skills align with your requirements and that I can contribute meaningfully to your team's success.
 
-Please find my CV attached for your review.
+I would welcome the opportunity to discuss how my experience can benefit your organization. Thank you for considering my application.
 
 Best regards,
 [Your Name]`;
+        }
+
+        // Store cover letter result
+        if (result && job.id) {
+          try {
+            await redis.set(
+              `job-result:${job.id}`,
+              JSON.stringify({ content: result }),
+              'EX', 60
+            );
+          } catch (err) {
+            logger.error('Failed to store cover letter in Redis', { error: err.message });
+          }
+        }
+
+        return result;
       }
 
     } catch (error) {
-      logger.error('Worker job failed', { error: error.message });
-      return { action: 'unknown', response: 'Error processing request' };
+      logger.error('AI worker job failed', { error: error.message });
+      
+      const errorResult = { 
+        action: 'error', 
+        response: 'Something went wrong. Please try again.'
+      };
+
+      // Even store error results so the service doesn't timeout
+      if (job.id) {
+        try {
+          await redis.set(
+            `job-result:${job.id}`,
+            JSON.stringify(errorResult),
+            'EX', 10
+          );
+        } catch (err) {
+          // Ignore storage errors
+        }
+      }
+
+      return errorResult;
     }
   },
-  { connection: redis, concurrency: 3 }
+  { 
+    connection: redis, 
+    concurrency: 2 
+  }
 );
 
-// Fallback CV analysis function
-function performFallbackCVAnalysis(cvText, jobTitle = null) {
-  const text = cvText.toLowerCase();
-  let overallScore = 50;
-  let jobMatchScore = 50;
+// Enhanced smart fallback function
+function generateSmartFallback(message) {
+  const text = (message || '').toLowerCase().trim();
 
-  // Skills analysis
-  const techSkills = ['javascript', 'python', 'java', 'react', 'node', 'sql', 'html', 'css'];
-  const businessSkills = ['management', 'leadership', 'analysis', 'strategy', 'planning'];
-  const foundSkills = [];
-  const relevantSkills = [];
-  
-  techSkills.forEach(skill => {
-    if (text.includes(skill)) {
-      foundSkills.push(skill);
-      overallScore += 3;
-      if (jobTitle && jobTitle.toLowerCase().includes('developer')) {
-        relevantSkills.push(skill);
-        jobMatchScore += 5;
-      }
-    }
-  });
-  
-  businessSkills.forEach(skill => {
-    if (text.includes(skill)) {
-      foundSkills.push(skill);
-      overallScore += 2;
-      if (jobTitle && jobTitle.toLowerCase().includes('manager')) {
-        relevantSkills.push(skill);
-        jobMatchScore += 4;
-      }
-    }
-  });
-
-  // Experience analysis
-  const experienceYears = extractExperienceYears(text);
-  let experienceScore = Math.min(experienceYears * 10, 100);
-  
-  if (experienceYears >= 5) overallScore += 10;
-  if (experienceYears >= 3) overallScore += 5;
-
-  // Education analysis
-  let educationScore = 50;
-  let educationLevel = 'Other';
-  
-  if (text.includes('phd') || text.includes('doctorate')) {
-    educationScore = 100;
-    educationLevel = 'PhD';
-    overallScore += 15;
-  } else if (text.includes('master') || text.includes('msc') || text.includes('mba')) {
-    educationScore = 85;
-    educationLevel = 'Master\'s';
-    overallScore += 10;
-  } else if (text.includes('bachelor') || text.includes('bsc') || text.includes('ba ')) {
-    educationScore = 75;
-    educationLevel = 'Bachelor\'s';
-    overallScore += 5;
-  } else if (text.includes('diploma') || text.includes('hnd')) {
-    educationScore = 60;
-    educationLevel = 'Diploma';
+  // Greetings
+  if (text.match(/^(hello|hi|hey|good morning|good afternoon|good evening)$/)) {
+    return {
+      action: 'greeting',
+      response: 'Hello! Welcome to SmartCVNaija! What job you dey find?'
+    };
   }
 
-  // CV quality assessment
-  let cvQuality = 'Average';
-  const hasContact = text.includes('@') || text.includes('email');
-  const hasPhone = text.includes('phone') || text.includes('mobile');
-  const hasProperLength = text.length > 500 && text.length < 5000;
-  
-  if (hasContact && hasPhone && hasProperLength && foundSkills.length >= 3) {
-    cvQuality = 'Good';
-    overallScore += 5;
-  }
-  if (foundSkills.length >= 5 && experienceYears >= 3) {
-    cvQuality = 'Excellent';
-    overallScore += 10;
+  // Specific pidgin/vague pattern (also cover as fallback)
+  if (text.match(/^i (dey|wan|need) find job$/)) {
+    return {
+      action: 'clarify',
+      response: 'Which kind work and for where? Talk like "developer work for Lagos" or "remote job"',
+      requiresSpecificity: true
+    };
   }
 
-  // Strengths and areas for improvement
-  const strengths = [];
-  const areasForImprovement = [];
-  
-  if (foundSkills.length >= 5) strengths.push('Strong technical skill set');
-  if (experienceYears >= 5) strengths.push('Extensive professional experience');
-  if (educationScore >= 75) strengths.push('Strong educational background');
-  
-  if (text.length < 500) areasForImprovement.push('CV could be more detailed');
-  if (!hasContact) areasForImprovement.push('Missing contact email');
-  if (foundSkills.length < 3) areasForImprovement.push('Could highlight more skills');
+  // NEW: Partial job type (e.g., "backend developer")
+  if (text.match(/(developer|engineer|marketing|sales|manager|teacher|nurse|doctor|backend|frontend)/) && !text.match(/(in|at|remote|lagos|abuja)/)) {
+    return {
+      action: 'clarify',
+      response: `What location for ${text} jobs? 📍 Lagos, Abuja, or Remote?`,
+      requiresSpecificity: true
+    };
+  }
 
-  let recommendation = 'Average';
-  if (overallScore >= 80) recommendation = 'Strong';
-  else if (overallScore >= 65) recommendation = 'Good';
-  else if (overallScore < 50) recommendation = 'Weak';
+  // NEW: Partial location/remote (e.g., "remote jobs")
+  if (text.match(/(remote|lagos|abuja|port harcourt) jobs?/) && !text.match(/(developer|engineer|marketing|sales|manager|teacher|nurse|doctor)/)) {
+    const loc = text.match(/remote/) ? 'remote' : text.match(/(lagos|abuja|port harcourt)/)[0];
+    return {
+      action: 'clarify',
+      response: `What type of ${loc} jobs? Developer, marketing, or sales?`,
+      requiresSpecificity: true
+    };
+  }
 
+  // Job search intent
+  if (text.includes('job') || text.includes('work') || text.includes('find') || text.includes('search')) {
+    return {
+      action: 'clarify',
+      response: 'Which job and where? Like "developer jobs in Lagos"'
+    };
+  }
+
+  // Help
+  if (text.includes('help')) {
+    return {
+      action: 'help',
+      response: 'I help find jobs. Try "find jobs in Lagos" or upload CV.'
+    };
+  }
+
+  // Default
   return {
-    overall_score: Math.min(Math.max(overallScore, 0), 100),
-    job_match_score: Math.min(Math.max(jobMatchScore, 0), 100),
-    skills_score: Math.min(foundSkills.length * 8, 100),
-    experience_score: experienceScore,
-    education_score: educationScore,
-    experience_years: experienceYears,
-    key_skills: foundSkills.slice(0, 5),
-    relevant_skills: relevantSkills.slice(0, 3),
-    education_level: educationLevel,
-    summary: `Professional with ${experienceYears} years experience and ${educationLevel} education`,
-    strengths: strengths.slice(0, 4),
-    areas_for_improvement: areasForImprovement.slice(0, 3),
-    recommendation: recommendation,
-    cv_quality: cvQuality
+    action: 'help',
+    response: 'I help you find jobs in Nigeria. What you looking for?'
   };
 }
 
-function extractExperienceYears(text) {
+// Basic CV analysis fallback
+function performBasicCVAnalysis(cvText, jobTitle) {
+  const text = (cvText || '').toLowerCase();
+  let overallScore = 55;
+  let jobMatchScore = 50;
+
+  // Skills detection
+  const skills = ['javascript', 'python', 'java', 'react', 'management', 'leadership', 'communication'];
+  const foundSkills = [];
+  
+  skills.forEach(skill => {
+    if (text.includes(skill)) {
+      foundSkills.push(skill);
+      overallScore += 4;
+    }
+  });
+
+  // Experience estimation
+  const experienceYears = extractExperience(text);
+  overallScore += Math.min(experienceYears * 3, 20);
+
+  // Job matching
+  if (jobTitle && text.includes(jobTitle.toLowerCase())) {
+    jobMatchScore += 25;
+  }
+
+  return {
+    overall_score: Math.min(overallScore, 100),
+    job_match_score: Math.min(jobMatchScore, 100),
+    skills_score: Math.min(foundSkills.length * 12, 100),
+    experience_score: Math.min(experienceYears * 12, 100),
+    education_score: 65,
+    experience_years: experienceYears,
+    key_skills: foundSkills.slice(0, 5),
+    relevant_skills: foundSkills.slice(0, 3),
+    education_level: "Bachelor's",
+    summary: `Professional with ${experienceYears} years experience`,
+    strengths: ['Professional background', 'Relevant skills'],
+    areas_for_improvement: ['Additional training', 'Certifications'],
+    recommendation: overallScore >= 70 ? 'Good' : 'Average',
+    cv_quality: 'Good'
+  };
+}
+
+function extractExperience(text) {
   const patterns = [
-    /(\d+)\s*years?\s*(of\s*)?experience/i,
-    /(\d+)\s*yrs?\s*(of\s*)?experience/i,
-    /experience.*?(\d+)\s*years?/i
+    /(\d+)\s*years?\s*experience/i,
+    /(\d+)\s*yrs?\s*experience/i
   ];
 
   for (const pattern of patterns) {
@@ -381,8 +478,25 @@ function extractExperienceYears(text) {
     }
   }
 
-  const jobCount = (text.match(/\b(19|20)\d{2}\b/g) || []).length;
-  return Math.max(Math.floor(jobCount / 2), 0);
+  return 2; // Default
 }
+
+// Event handlers
+worker.on('ready', () => {
+  logger.info('🧠 Pure AI conversation worker ready!');
+});
+
+worker.on('completed', (job, result) => {
+  logger.info('AI conversation completed', { 
+    jobId: job.id, 
+    action: result?.action 
+  });
+});
+
+worker.on('failed', (job, err) => {
+  logger.error('AI conversation failed', { jobId: job.id, error: err.message });
+});
+
+logger.info('🚀 SmartCVNaija AI conversation worker started!');
 
 module.exports = worker;

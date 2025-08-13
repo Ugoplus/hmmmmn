@@ -10,7 +10,6 @@ const redis = new Redis({
   lazyConnect: true,
   retryDelayOnFailover: 100,
   connectTimeout: 10000,
-  maxRetriesPerRequest: 3
 });
 
 redis.setMaxListeners(20);

@@ -1,0 +1,26 @@
+========================================
+28.0.0.38 - Performance - 3/19/2025 12:35:39 PM
+========================================
+Windows 11 High Performance Timers Enabled: 2248
+========================================
+28.0.0.38 - AddNewInput - 3/19/2025 12:36:39 PM
+========================================
+vMix.VMIXException: Capture Resolution is not supported by this device. ---> System.Runtime.InteropServices.COMException: Unspecified error
+
+   at DirectShowLib.DsError.ThrowExceptionForHR(Int32 hr)
+   at nj.k(IPin a, Guid a, Format a, md a, Boolean a)
+   at nj.d(th a, md a, CaptureType a, CaptureAudioType a, Size a, Boolean a, Boolean a, th a, bc a, Guid a)
+   --- End of inner exception stack trace ---
+   at ozzzzza.a(WaitCallback a)
+   at nj.d(th a, md a, CaptureType a, CaptureAudioType a, Size a, Boolean a, Boolean a, th a, bc a, Guid a)
+   at nj..ctor(Guid a, th a, md a, CaptureType a, CaptureAudioType a, Int32 a, Int32 a, Boolean a, Boolean a, th a, bc a, Guid a)
+   at my.a(Guid a, th a, md a, CaptureType a, CaptureAudioType a, Size a, Boolean a, Boolean a, th a, bc a, Guid a, Boolean a)
+   at vMix.frmInput.b(Object a, EventArgs a)
+========================================
+28.0.0.38 - Performance - 3/19/2025 12:44:41 PM
+========================================
+Windows 11 High Performance Timers Enabled: 2300
+========================================
+28.0.0.38 - Performance - 3/19/2025 1:16:19 PM
+========================================
+Windows 11 High Performance Timers Enabled: 2176

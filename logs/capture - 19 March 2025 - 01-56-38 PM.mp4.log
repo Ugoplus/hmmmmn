@@ -1,0 +1,53 @@
+﻿3/19/2025 1:32:02 PM, Version: 28.0.0.38 x64
+3/19/2025 1:32:02 PM, Size: 2276x1280
+3/19/2025 1:32:02 PM, System: NTSC 29.97p
+3/19/2025 1:32:02 PM, Codec: H264
+3/19/2025 1:32:02 PM, Format: UYVY 16 1498831189
+3/19/2025 1:32:02 PM, AudioDevice: vMix Audio
+3/19/2025 1:32:02 PM, AudioFormat: 48000 Hz 16 Bit 2 Channels
+3/19/2025 1:32:02 PM, AudioDelay: 0
+3/19/2025 1:32:02 PM, RestartInterval: 0
+3/19/2025 1:32:02 PM, Buffers: 10
+3/19/2025 1:32:02 PM, BitRate: 8 Mbps
+3/19/2025 1:32:02 PM, AudioBitRate: 384 Kbps
+3/19/2025 1:56:39 PM, StartRecording
+3/19/2025 1:59:11 PM, StopRecording
+3/19/2025 1:59:11 PM, Duration: 00:02:32
+3/19/2025 1:59:11 PM, Frames: 4563
+3/19/2025 1:59:11 PM, DroppedFrames: 0
+3/19/2025 1:59:11 PM,   DueToSourceFrameRate: 0
+3/19/2025 1:59:11 PM,   DueToHardDiskOrCPU: 0
+3/19/2025 1:59:11 PM, DroppedSamples: 0
+3/19/2025 1:59:11 PM, MissedSamples: 0
+3/19/2025 1:59:11 PM, SyncedSamples: 0
+3/19/2025 1:59:11 PM, AudioOffset: 0
+3/19/2025 1:59:11 PM, AudioDelay: 0
+3/19/2025 1:59:11 PM, AudioEngine
+3/19/2025 1:59:11 PM,   Running: True
+3/19/2025 1:59:11 PM,   SampleRate: 48000hz 16 Bit
+3/19/2025 1:59:11 PM,   MixingErrors: 0
+3/19/2025 1:59:11 PM,     Streams
+3/19/2025 1:59:11 PM,       Mixer
+3/19/2025 1:59:11 PM,         Samples: 116437
+3/19/2025 1:59:11 PM,         Dropped: Read 0 Write 0
+3/19/2025 1:59:11 PM,         Latency: 0 ms
+3/19/2025 1:59:11 PM,         Errors: 0
+3/19/2025 1:59:11 PM,       Headphones
+3/19/2025 1:59:11 PM,         Samples: 116437
+3/19/2025 1:59:11 PM,         Dropped: Read 0 Write 0
+3/19/2025 1:59:11 PM,         Latency: 20 ms
+3/19/2025 1:59:11 PM,         Errors: 0
+3/19/2025 1:59:11 PM,       DirectShow
+3/19/2025 1:59:11 PM,         Samples: 105077
+3/19/2025 1:59:11 PM,         Dropped: Read 2 Write 0
+3/19/2025 1:59:11 PM,         Latency: 40 ms
+3/19/2025 1:59:11 PM,         TargetLatency: 67 ms
+3/19/2025 1:59:11 PM,         Resampled: 0/40
+3/19/2025 1:59:11 PM,         Errors: 0
+3/19/2025 1:59:11 PM,       Audio
+3/19/2025 1:59:11 PM,         Samples: 103088
+3/19/2025 1:59:11 PM,         Dropped: Read 2 Write 0
+3/19/2025 1:59:11 PM,         Latency: 60 ms
+3/19/2025 1:59:11 PM,         TargetLatency: 67 ms
+3/19/2025 1:59:11 PM,         Resampled: 0/40
+3/19/2025 1:59:11 PM,         Errors: 0

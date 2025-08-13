@@ -1,0 +1,355 @@
+// services/openai.js - HYBRID: Local parsing + reliable polling
+
+const { Queue } = require('bullmq');
+const redis = require('../config/redis');
+const logger = require('../utils/logger');
+
+const openaiQueue = new Queue('openai-tasks', { connection: redis });
+
+class AIService {
+  // ⚡ MAIN METHOD: Try local first, then AI if needed
+  async parseJobQuery(message, identifier = null) {
+    try {
+      // STEP 1: Try fast local parsing first (0 tokens, 1ms)
+      const simpleResult = this.parseSimpleCommand(message);
+      if (simpleResult) {
+        logger.info('Used local parsing', { identifier, action: simpleResult.action });
+        return simpleResult;
+      }
+
+      // STEP 2: Try basic job search parsing (0 tokens, 5ms)
+      const basicSearch = this.parseBasicJobSearch(message);
+      if (basicSearch) {
+        logger.info('Used basic search parsing', { identifier, filters: basicSearch.filters });
+        return basicSearch;
+      }
+
+      // STEP 3: Use AI for complex queries (300+ tokens, 500-2000ms)
+      logger.info('Using AI for complex query', { identifier, message: message.substring(0, 50) });
+      return await this.parseWithAI(message, identifier);
+
+    } catch (error) {
+      logger.error('parseJobQuery error', { error: error.message });
+      return {
+        action: 'unknown',
+        response: 'I didn\'t understand. Try "apply 1,2,3", "find jobs in Lagos", or "help".'
+      };
+    }
+  }
+
+  // ⚡ LOCAL: Handle 80% of commands instantly
+  parseSimpleCommand(message) {
+    const text = message.toLowerCase().trim();
+
+    // Reset command
+    if (text.includes('reset') || text.includes('clear')) {
+      return { action: 'reset', response: 'Session cleared! Ready to start fresh! 🚀' };
+    }
+
+    // Status check
+    if (text.includes('status') || text.includes('usage')) {
+      return { action: 'status', response: 'Checking your status...' };
+    }
+
+    // Help command
+    if (text.includes('help')) {
+      return { 
+        action: 'help', 
+        response: `🆘 SmartCVNaija Commands\n\n• "find jobs in Lagos"\n• "apply 1,2,3" or "apply all"\n• Upload CV (PDF/DOCX)\n• "status" - Check usage\n• "reset" - Clear session`
+      };
+    }
+
+    // Job applications - MOST IMPORTANT for scale
+    if (text.includes('apply')) {
+      if (text.includes('all')) {
+        return {
+          action: 'apply_job',
+          applyAll: true,
+          jobNumbers: null
+        };
+      }
+
+      // Extract numbers: "apply 1,3,5" → [1,3,5]
+      const numbers = this.extractJobNumbers(text);
+      if (numbers.length > 0) {
+        return {
+          action: 'apply_job',
+          applyAll: false,
+          jobNumbers: numbers
+        };
+      }
+
+      return {
+        action: 'apply_job',
+        applyAll: false,
+        jobNumbers: null,
+        response: 'Specify jobs: "apply 1,2,3" or "apply all"'
+      };
+    }
+
+    // Navigation
+    if (text.includes('next')) {
+      return { action: 'browse_next' };
+    }
+    if (text.includes('previous') || text.includes('prev')) {
+      return { action: 'browse_previous' };
+    }
+
+    // Greetings
+    if (text.match(/^(hello|hi|hey|start)$/)) {
+      return { action: 'greeting', response: 'Hello! Welcome to SmartCVNaija! 🇳🇬' };
+    }
+
+    return null; // Needs AI
+  }
+
+  // ⚡ LOCAL: Basic job searches
+  parseBasicJobSearch(message) {
+    const text = message.toLowerCase();
+    
+    if (!text.includes('find') && !text.includes('search') && !text.includes('job') && !text.includes('looking')) {
+      return null;
+    }
+
+    const filters = {};
+
+    // Nigerian locations
+    const locations = ['lagos', 'abuja', 'kano', 'ibadan', 'port harcourt', 'kaduna', 'jos', 'benin', 'gombe', 'bauchi'];
+    for (const location of locations) {
+      if (text.includes(location)) {
+        filters.location = location.charAt(0).toUpperCase() + location.slice(1);
+        break;
+      }
+    }
+
+    // Remote work
+    if (text.includes('remote')) filters.remote = true;
+    
+    // Job types
+    const jobTypes = ['developer', 'engineer', 'manager', 'analyst', 'designer', 'marketing', 'sales', 'teacher'];
+    for (const jobType of jobTypes) {
+      if (text.includes(jobType)) {
+        filters.title = jobType;
+        break;
+      }
+    }
+
+    return {
+      action: 'search_jobs',
+      filters: filters
+    };
+  }
+
+  // 🧠 AI: For complex queries only - using YOUR reliable polling method
+  async parseWithAI(message, identifier) {
+    try {
+      const job = await openaiQueue.add('parse-query', { 
+        message,
+        userId: identifier,
+        timestamp: Date.now()
+      });
+      
+      // Use YOUR working polling method that handles timeouts
+      return new Promise((resolve, reject) => {
+        const checkResult = async () => {
+          try {
+            const jobData = await openaiQueue.getJob(job.id);
+            if (jobData && jobData.finishedOn && jobData.returnvalue) {
+              resolve(jobData.returnvalue);
+            } else if (jobData && jobData.failedReason) {
+              reject(new Error(jobData.failedReason));
+            } else {
+              setTimeout(checkResult, 500);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        };
+        
+        checkResult();
+        // Shorter timeout since most commands are handled locally
+        setTimeout(() => reject(new Error('AI timeout')), 10000);
+      });
+
+    } catch (error) {
+      logger.error('AI parsing failed', { error: error.message });
+      return {
+        action: 'unknown',
+        response: 'Try "find jobs in Lagos" or "apply 1,2,3"'
+      };
+    }
+  }
+
+  // Helper: Extract job numbers
+  extractJobNumbers(text) {
+    const numbers = [];
+    const matches = text.match(/\b\d+\b/g);
+    if (matches) {
+      matches.forEach(match => {
+        const num = parseInt(match);
+        if (num >= 1 && num <= 20) {
+          numbers.push(num);
+        }
+      });
+    }
+    return [...new Set(numbers)].sort((a, b) => a - b);
+  }
+
+  // 🧠 CV Analysis - Keep your working polling method
+  async analyzeCV(cvText, jobTitle = null, identifier = null) {
+    try {
+      const job = await openaiQueue.add('analyze-cv', { 
+        cvText, 
+        jobTitle,
+        userId: identifier
+      });
+      
+      // Use YOUR working polling approach
+      return new Promise((resolve, reject) => {
+        const checkResult = async () => {
+          try {
+            const jobData = await openaiQueue.getJob(job.id);
+            if (jobData && jobData.finishedOn && jobData.returnvalue) {
+              const result = jobData.returnvalue;
+              
+              if (!result || typeof result !== 'object') {
+                resolve(this.getFallbackAnalysis(cvText, jobTitle));
+                return;
+              }
+
+              // Handle new format
+              if (result.content && typeof result.content === 'object') {
+                resolve(result.content);
+                return;
+              }
+
+              // Validate required fields
+              const requiredFields = ['overall_score', 'job_match_score', 'skills_score', 'experience_score', 'education_score', 'experience_years'];
+              for (const field of requiredFields) {
+                if (!(field in result)) {
+                  resolve(this.getFallbackAnalysis(cvText, jobTitle));
+                  return;
+                }
+              }
+
+              resolve(result);
+            } else if (jobData && jobData.failedReason) {
+              reject(new Error(jobData.failedReason));
+            } else {
+              setTimeout(checkResult, 500);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        };
+        
+        checkResult();
+        setTimeout(() => resolve(this.getFallbackAnalysis(cvText, jobTitle)), 15000);
+      });
+
+    } catch (error) {
+      return this.getFallbackAnalysis(cvText, jobTitle);
+    }
+  }
+
+  // 🧠 Cover Letter - Keep your working polling method  
+  async generateCoverLetter(cvText, jobTitle = null, companyName = null, identifier = null) {
+    try {
+      const job = await openaiQueue.add('generate-cover-letter', { 
+        cvText, 
+        jobTitle, 
+        companyName,
+        userId: identifier
+      });
+      
+      return new Promise((resolve, reject) => {
+        const checkResult = async () => {
+          try {
+            const jobData = await openaiQueue.getJob(job.id);
+            if (jobData && jobData.finishedOn && jobData.returnvalue) {
+              const result = jobData.returnvalue;
+              
+              if (result && typeof result === 'object' && result.content) {
+                const coverLetter = result.content;
+                if (coverLetter && coverLetter.length > 50) {
+                  resolve(coverLetter);
+                  return;
+                }
+              }
+              
+              if (typeof result === 'string' && result.length > 50) {
+                resolve(result);
+                return;
+              }
+
+              resolve(this.getFallbackCoverLetter(jobTitle, companyName));
+            } else if (jobData && jobData.failedReason) {
+              reject(new Error(jobData.failedReason));
+            } else {
+              setTimeout(checkResult, 500);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        };
+        
+        checkResult();
+        setTimeout(() => resolve(this.getFallbackCoverLetter(jobTitle, companyName)), 10000);
+      });
+
+    } catch (error) {
+      return this.getFallbackCoverLetter(jobTitle, companyName);
+    }
+  }
+
+  // Keep your existing fallback methods
+  getFallbackAnalysis(cvText, jobTitle = null) {
+    const text = (cvText || '').toLowerCase();
+    let overallScore = 50;
+    let jobMatchScore = 50;
+
+    // Basic scoring
+    if (text.includes('experience') || text.includes('work')) overallScore += 15;
+    if (text.includes('education') || text.includes('university')) overallScore += 10;
+    if (text.includes('skill') || text.includes('proficient')) overallScore += 10;
+
+    // Job matching
+    if (jobTitle) {
+      const jobTitleLower = jobTitle.toLowerCase();
+      if (text.includes(jobTitleLower)) jobMatchScore += 20;
+    }
+    
+    return {
+      overall_score: Math.min(Math.max(overallScore, 0), 100),
+      job_match_score: Math.min(Math.max(jobMatchScore, 0), 100),
+      skills_score: 60,
+      experience_score: 50,
+      education_score: 60,
+      experience_years: 2,
+      key_skills: ['Communication', 'Teamwork', 'Problem Solving'],
+      relevant_skills: ['Professional Experience', 'Leadership'],
+      education_level: 'Bachelor\'s',
+      summary: 'Professional with relevant experience and good potential',
+      strengths: ['Strong educational background', 'Good communication skills'],
+      areas_for_improvement: ['More certifications', 'Industry experience'],
+      recommendation: 'Good',
+      cv_quality: 'Good',
+      personalized_message: 'Great potential for the Nigerian job market!'
+    };
+  }
+
+  getFallbackCoverLetter(jobTitle = null, companyName = null) {
+    return `Dear Hiring Manager,
+
+I am writing to express my strong interest in the ${jobTitle || 'position'} at ${companyName || 'your company'}.
+
+My background and experience make me a qualified candidate for this role in Nigeria's competitive market. I have developed strong skills that align with your requirements and am confident in my ability to contribute to your team.
+
+I would welcome the opportunity to discuss how my experience can benefit your organization. Thank you for considering my application.
+
+Best regards,
+[Your Name]`;
+  }
+}
+
+module.exports = new AIService();
