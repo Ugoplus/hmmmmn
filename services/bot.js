@@ -12,6 +12,7 @@ const nodemailer = require('nodemailer');
 const config = require('../config');
 
 const cvQueue = new Queue('cv-processing', { connection: redis });
+const RateLimiter = require('../utils/rateLimiter');
 
 // Email transporter
 const transporter = nodemailer.createTransporter({
@@ -31,13 +32,19 @@ class SmartCVNaijaBot {
   // ================================
   
   async handleWhatsAppMessage(phone, message, file = null) {
-    try {
-      console.log('Bot handling WhatsApp message:', { phone, hasMessage: !!message, hasFile: !!file });
-      
-      // Handle file uploads
-      if (file) {
-        return await this.handleFileUpload(phone, file);
+  try {
+    console.log('Bot handling WhatsApp message:', { phone, hasMessage: !!message, hasFile: !!file });
+    
+    // Handle file uploads
+    if (file) {
+      // CHECK CV UPLOAD RATE LIMIT
+      const uploadLimit = await RateLimiter.checkLimit(phone, 'cv_upload');
+      if (!uploadLimit.allowed) {
+        return this.sendWhatsAppMessage(phone, uploadLimit.message);
       }
+      
+      return await this.handleFileUpload(phone, file);
+    }
 
       // Handle text messages
       if (!message || typeof message !== 'string') {
@@ -54,7 +61,19 @@ class SmartCVNaijaBot {
       }
 
       // Send to AI with conversation memory
-      return await this.handleWithConversationMemory(phone, message);
+       const aiLimit = await RateLimiter.checkLimit(phone, 'ai_call');
+    if (!aiLimit.allowed) {
+      // Try simple pattern matching when AI is rate limited
+      const simpleResponse = this.handleSimplePatterns(phone, message);
+      if (simpleResponse) {
+        return simpleResponse;
+      }
+      
+      return this.sendWhatsAppMessage(phone, aiLimit.message);
+    }
+
+    // Send to AI with conversation memory
+    return await this.handleWithConversationMemory(phone, message);
 
     } catch (error) {
       console.error('WhatsApp message processing error:', error);
@@ -106,6 +125,53 @@ class SmartCVNaijaBot {
       return this.handleEnhancedFallback(phone, message);
     }
   }
+
+// ADD THIS NEW METHOD
+handleSimplePatterns(phone, message) {
+  const text = message.toLowerCase().trim();
+  
+  // Handle basic commands without AI
+  if (text.includes('hello') || text.includes('hi')) {
+    this.sendWhatsAppMessage(phone, 'Hello! I help you find jobs in Nigeria. What can I do for you? 😊');
+    return true;
+  }
+  
+  if (text.includes('help')) {
+    this.sendWhatsAppMessage(phone, this.getHelpMessage());
+    return true;
+  }
+  
+  if (text.includes('status')) {
+    this.handleStatusRequest(phone);
+    return true;
+  }
+
+  // Simple job searches without AI
+  const jobTypes = ['developer', 'engineer', 'marketing', 'sales'];
+  const locations = ['lagos', 'abuja', 'remote'];
+  
+  let foundJob = null;
+  let foundLocation = null;
+  
+  for (const job of jobTypes) {
+    if (text.includes(job)) foundJob = job;
+  }
+  
+  for (const loc of locations) {
+    if (text.includes(loc)) foundLocation = loc;
+  }
+  
+  if (foundJob && foundLocation) {
+    this.searchJobs(phone, { 
+      title: foundJob, 
+      location: foundLocation.charAt(0).toUpperCase() + foundLocation.slice(1),
+      remote: foundLocation === 'remote'
+    });
+    return true;
+  }
+  
+  return false; // No simple pattern matched
+}
 
   // ================================
   // USER CONTEXT BUILDER
@@ -472,7 +538,12 @@ class SmartCVNaijaBot {
   // ================================
   
   async searchJobs(identifier, filters) {
-    try {
+  try {
+    // CHECK JOB SEARCH RATE LIMIT
+    const searchLimit = await RateLimiter.checkLimit(identifier, 'job_search');
+    if (!searchLimit.allowed) {
+      return this.sendWhatsAppMessage(identifier, searchLimit.message);
+    }
       const cacheKey = `jobs:${JSON.stringify(filters)}`;
       const cached = await redis.get(cacheKey);
       

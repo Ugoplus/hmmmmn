@@ -4,30 +4,34 @@ const { Queue, QueueEvents } = require('bullmq');
 const crypto = require('crypto');
 const redis = require('../config/redis');
 const logger = require('../utils/logger');
+const redis = require('../config/redis');
+const { queueRedis } = require('../config/redis');
+const RateLimiter = require('../utils/rateLimiter');
 
 // Enhanced queue configuration for better performance
 const openaiQueue = new Queue('openai-tasks', { 
-  connection: redis.duplicate(),
+  connection: queueRedis.duplicate(), // Use separate Redis for queues
   defaultJobOptions: {
-    attempts: 2,  // Reduced for faster failure
+    attempts: 3,
     backoff: {
       type: 'exponential',
-      delay: 1000,  // Faster retry
+      delay: 1000,
     },
     removeOnComplete: {
-      age: 300,
-      count: 50,  // Clean up faster
+      age: 300,      // Remove completed jobs after 5 minutes
+      count: 100,    // Keep max 100 completed jobs
     },
     removeOnFail: {
-      age: 1800,  // Shorter retention
+      age: 1800,     // Remove failed jobs after 30 minutes
+      count: 50,     // Keep max 50 failed jobs
     },
-    ttl: 10000,  // 10 second timeout
+    ttl: 30000,      // Job timeout: 30 seconds
   },
 });
 
 // Create QueueEvents with separate connection
 const queueEvents = new QueueEvents('openai-tasks', { 
-  connection: redis.duplicate(),
+  connection: queueRedis.duplicate(),
 });
 
 queueEvents.on('ready', () => {
@@ -162,14 +166,15 @@ class AIService {
       }
 
       // LEVEL 4: Rate limiting (your existing logic)
-      const rateLimited = await this.checkRateLimit(identifier);
-      if (rateLimited) {
+     if (identifier) {
+      const aiLimit = await RateLimiter.checkLimit(identifier, 'ai_call');
+      if (!aiLimit.allowed) {
         return {
           action: 'rate_limited',
-          response: 'Please wait a moment before sending more requests. Type "help" for commands.'
+          response: aiLimit.message
         };
       }
-
+    }
       // LEVEL 5: AI processing (your existing logic)
       this.metrics.aiCalls++;
       logger.info('Using AI for complex query', { identifier });

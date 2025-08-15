@@ -18,7 +18,8 @@ const redis = require('./config/redis');
 const dbManager = require('./config/database'); // ✅ FIXED: Use dbManager consistently
 const cvCleanup = require('./services/cv-cleanup');
 const jobCleanup = require('./services/job-cleanup');
-
+const RateLimiter = require('./utils/rateLimiter');
+const rateLimit = require('express-rate-limit');
 const app = express();
 
 // Schedule cleanup services
@@ -51,6 +52,21 @@ app.use(cors({
   methods: ['GET', 'POST'],
   credentials: true
 }));
+
+// Webhook rate limiting
+const webhookLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,  // 1 minute
+  max: 2000,                // High limit for YCloud webhooks
+  message: {
+    error: 'Webhook rate limit exceeded',
+    retryAfter: '1 minute'
+  },
+  keyGenerator: (req) => req.ip
+});
+
+app.use('/webhook/', webhookLimiter);
+
+
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -255,6 +271,21 @@ app.post('/webhook/ycloud', async (req, res) => {
 
     if (!whatsappInboundMessage) {
       console.log('YCloud: No inbound message found');
+      return;
+    }
+
+    const userPhone = whatsappInboundMessage.from;
+    
+    // NEW: Check user message rate limit
+    const messageLimit = await RateLimiter.checkLimit(userPhone, 'message');
+    
+    if (!messageLimit.allowed) {
+      logger.warn('User message rate limited', { 
+        phone: RateLimiter.maskIdentifier(userPhone),
+        remaining: messageLimit.remaining
+      });
+      
+      await ycloud.sendTextMessage(userPhone, messageLimit.message);
       return;
     }
 
@@ -606,6 +637,58 @@ app.get('/test/webhooks', (req, res) => {
     }
   });
 });
+
+
+app.get('/admin/rate-limits/:phone', async (req, res) => {
+  try {
+    const phone = req.params.phone;
+    const stats = {};
+    
+    for (const action of ['message', 'job_search', 'cv_upload', 'application']) {
+      const key = `rate:${action}:${phone}`;
+      const current = await redis.get(key);
+      const ttl = await redis.ttl(key);
+
+      stats[action] = {
+        used: parseInt(current) || 0,
+        resetIn: ttl > 0 ? ttl : 0
+      };
+    }
+    
+    res.json({
+      phone: phone.substring(0, 6) + '***',
+      rate_limits: stats,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    req.logger.error('Error getting rate limits', { error: error.message });
+    res.status(500).json({ error: 'Failed to get rate limit stats' });
+  }
+});
+
+app.delete('/admin/rate-limits/:phone', async (req, res) => {
+  try {
+    const phone = req.params.phone;
+    const keys = await redis.keys(`rate:*:${phone}`);
+    
+    if (keys.length > 0) {
+      await redis.del(...keys);
+    }
+    
+    res.json({
+      message: 'Rate limits cleared',
+      phone: phone.substring(0, 6) + '***',
+      cleared_keys: keys.length,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    req.logger.error('Error clearing rate limits', { error: error.message });
+    res.status(500).json({ error: 'Failed to clear rate limits' });
+  }
+});
+
 
 // Error handling
 app.use((err, req, res, next) => {
