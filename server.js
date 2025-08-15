@@ -1,4 +1,4 @@
-// Clean server.js - WhatsApp only, no Telegram bloat
+// server.js - CORRECTED VERSION with proper database initialization
 
 require('events').EventEmitter.defaultMaxListeners = 20;
 require('dotenv').config();
@@ -15,7 +15,7 @@ const ycloud = require('./services/ycloud');
 const openaiWorker = require('./workers/openai');
 const cvWorker = require('./workers/cv');
 const redis = require('./config/redis');
-const dbManager = require('./config/database');
+const dbManager = require('./config/database'); // ✅ FIXED: Use dbManager consistently
 const cvCleanup = require('./services/cv-cleanup');
 const jobCleanup = require('./services/job-cleanup');
 
@@ -57,33 +57,60 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/public', express.static('public'));
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    services: {
-      database: 'connected',
-      redis: 'connected',
-      ycloud: 'active',
-      workers: 'running'
-    }
-  });
+app.get('/health', async (req, res) => {
+  try {
+    // ✅ FIXED: Test database connection properly
+    const dbHealthy = await dbManager.healthCheck();
+    
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      services: {
+        database: dbHealthy ? 'connected' : 'error',
+        redis: 'connected',
+        ycloud: 'active',
+        workers: 'running'
+      }
+    });
+  } catch (error) {
+    req.logger.error('Health check failed', { error: error.message });
+    res.status(500).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      services: {
+        database: 'error',
+        redis: 'unknown',
+        ycloud: 'unknown',
+        workers: 'unknown'
+      }
+    });
+  }
 });
 
 // API Health endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    services: {
-      database: 'connected',
-      redis: 'connected',
-      ycloud: 'active',
-      workers: 'running'
-    },
-    version: '1.0.0',
-    uptime: process.uptime()
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    const dbHealthy = await dbManager.healthCheck();
+    
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      services: {
+        database: dbHealthy ? 'connected' : 'error',
+        redis: 'connected',
+        ycloud: 'active',
+        workers: 'running'
+      },
+      version: '1.0.0',
+      uptime: process.uptime()
+    });
+  } catch (error) {
+    req.logger.error('API health check failed', { error: error.message });
+    res.status(500).json({
+      status: 'error',
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Job statistics endpoint
@@ -107,22 +134,27 @@ app.get('/api/metrics', async (req, res) => {
     const memUsage = process.memoryUsage();
     const cpuUsage = process.cpuUsage();
     
-    // Test database connection
+    // ✅ FIXED: Test database connection properly
     let dbStatus = 'connected';
     let dbResponseTime = 0;
     let activeConnections = 0;
     
     try {
       const start = Date.now();
-      await dbManager.query('SELECT 1');
+      const isHealthy = await dbManager.healthCheck();
       dbResponseTime = Date.now() - start;
       
-      const connResult = await dbManager.query(`
-        SELECT count(*) as active_connections 
-        FROM pg_stat_activity 
-        WHERE state = 'active'
-      `);
-      activeConnections = parseInt(connResult.rows[0]?.active_connections || 0);
+      if (isHealthy) {
+        // Get active connections count
+        const connResult = await dbManager.query(`
+          SELECT count(*) as active_connections 
+          FROM pg_stat_activity 
+          WHERE state = 'active'
+        `);
+        activeConnections = parseInt(connResult.rows[0]?.active_connections || 0);
+      } else {
+        dbStatus = 'error';
+      }
       
     } catch (dbError) {
       dbStatus = 'error';
@@ -595,18 +627,26 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-// Initialize database
+// ✅ FIXED: Proper database initialization
 async function initializeDatabase() {
   try {
     await dbManager.connect();
     logger.info('Database connection established');
+    
+    // Test the connection
+    const isHealthy = await dbManager.healthCheck();
+    if (!isHealthy) {
+      throw new Error('Database health check failed');
+    }
+    
+    logger.info('Database health check passed');
   } catch (error) {
     logger.error('Failed to initialize database', { error: error.message });
     process.exit(1);
   }
 }
 
-// Start server
+// ✅ FIXED: Start server with proper database initialization
 initializeDatabase().then(() => {
   const server = app.listen(config.get('port'), () => {
     logger.info(`SmartCVNaija server started successfully`, {
