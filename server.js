@@ -24,18 +24,6 @@ const app = express();
 // Schedule cleanup services
 cvCleanup.scheduleCleanup();
 
-// Initialize database
-let pool = null;
-async function initializeDatabase() {
-  try {
-    pool = await dbManager.connect();
-    logger.info('Database connection established');
-  } catch (error) {
-    logger.error('Failed to initialize database', { error: error.message });
-    process.exit(1);
-  }
-}
-
 // Redis connection handlers
 redis.on('error', (error) => {
   logger.error('Redis connection error', { error: error.message });
@@ -607,6 +595,17 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
+// Initialize database
+async function initializeDatabase() {
+  try {
+    await dbManager.connect();
+    logger.info('Database connection established');
+  } catch (error) {
+    logger.error('Failed to initialize database', { error: error.message });
+    process.exit(1);
+  }
+}
+
 // Start server
 initializeDatabase().then(() => {
   const server = app.listen(config.get('port'), () => {
@@ -688,9 +687,9 @@ initializeDatabase().then(() => {
     process.exit(1);
   });
 
-  module.exports = server;
-
 }).catch((error) => {
   logger.error('Failed to start server', { error: error.message });
   process.exit(1);
 });
+
+module.exports = app;
