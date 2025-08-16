@@ -1,20 +1,13 @@
-// workers/cv.js - FIXED VERSION with better error handling
+// workers/cv.js - OPTIMIZED FOR 4 CPU + 16GB RAM
 
 const { Worker } = require('bullmq');
-const Redis = require('ioredis');
+const { queueRedis } = require('../config/redis');
 const config = require('../config');
 const logger = require('../utils/logger');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const fs = require('fs');
 const path = require('path');
-
-const redis = new Redis({
-  host: config.get('redis.host'),
-  port: config.get('redis.port'),
-  password: config.get('redis.password'),
-  maxRetriesPerRequest: null
-});
 
 // Ensure uploads directory exists
 const uploadsDir = './uploads';
@@ -23,193 +16,82 @@ if (!fs.existsSync(uploadsDir)) {
   logger.info('Created uploads directory');
 }
 
-// FIXED: Better file type detection
-function detectFileType(buffer, filename) {
-  try {
-    // Check PDF magic bytes
-    if (buffer.subarray(0, 4).toString() === '%PDF') {
-      return { mime: 'application/pdf', ext: 'pdf' };
-    }
-    
-    // Check DOCX magic bytes (ZIP signature)
-    const zipSignature = buffer.subarray(0, 4);
-    if (zipSignature[0] === 0x50 && zipSignature[1] === 0x4B && 
-        (zipSignature[2] === 0x03 || zipSignature[2] === 0x05)) {
-      
-      // Look for DOCX specific content
-      const bufferStr = buffer.toString('binary', 0, Math.min(buffer.length, 1000));
-      if (bufferStr.includes('word/')) {
-        return { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: 'docx' };
-      }
-    }
-    
-    // Check old DOC format
-    if (buffer.subarray(0, 8).includes(Buffer.from([0xD0, 0xCF, 0x11, 0xE0]))) {
-      return { mime: 'application/msword', ext: 'doc' };
-    }
-    
-    // Fallback to filename extension
-    if (filename) {
-      const ext = filename.toLowerCase().split('.').pop();
-      switch (ext) {
-        case 'pdf':
-          return { mime: 'application/pdf', ext: 'pdf' };
-        case 'docx':
-          return { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: 'docx' };
-        case 'doc':
-          return { mime: 'application/msword', ext: 'doc' };
-        default:
-          return null;
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    logger.error('File type detection failed', { error: error.message });
-    return null;
-  }
-}
+// OPTIMAL SETTINGS FOR YOUR HARDWARE
+const OPTIMAL_CONCURRENCY = 12; // 3x your CPU cores
+const MAX_MEMORY_USAGE = 12; // Use 12GB of your 16GB (leave 4GB for OS)
 
-// FIXED: Better text extraction
-async function extractTextFromFile(buffer, detectedType) {
-  try {
-    if (detectedType.mime === 'application/pdf') {
-      logger.info('Extracting text from PDF');
-      const pdfData = await pdfParse(buffer, {
-        max: 0, // No page limit
-        version: 'v1.10.88'
-      });
-      return pdfData.text;
-      
-    } else if (detectedType.mime.includes('wordprocessingml') || detectedType.ext === 'docx') {
-      logger.info('Extracting text from DOCX');
-      const result = await mammoth.extractRawText({ buffer: buffer });
-      return result.value;
-      
-    } else if (detectedType.mime === 'application/msword' || detectedType.ext === 'doc') {
-      logger.info('Extracting text from DOC');
-      // For old DOC files, try mammoth first
-      try {
-        const result = await mammoth.extractRawText({ buffer: buffer });
-        return result.value;
-      } catch (docError) {
-        throw new Error('Old DOC format not fully supported. Please convert to PDF or DOCX.');
-      }
-    } else {
-      throw new Error(`Unsupported file type: ${detectedType.mime}`);
-    }
-  } catch (error) {
-    logger.error('Text extraction failed', { error: error.message, type: detectedType });
-    throw error;
-  }
-}
-
-// FIXED: Enhanced text cleaning
-function cleanExtractedText(rawText) {
-  if (!rawText || typeof rawText !== 'string') {
-    return '';
-  }
-  
-  return rawText
-    // Remove excessive whitespace
-    .replace(/\r\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\t+/g, ' ')
-    // Remove special characters that might cause issues
-    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
-    // Clean up spacing around punctuation
-    .replace(/\s+([,.!?;:])/g, '$1')
-    .replace(/([,.!?;:])\s+/g, '$1 ')
-    .trim();
-}
-
-// FIXED: Main CV worker with comprehensive error handling
+// Enhanced CV worker with high concurrency
 const cvWorker = new Worker('cv-processing', async (job) => {
-  const { file, identifier } = job.data;
+  const { file, identifier, jobId } = job.data;
   
   try {
+    // Memory monitoring
+    const memUsage = process.memoryUsage();
     logger.info('Starting CV processing', { 
       identifier, 
+      jobId,
       filename: file.originalname,
       size: file.buffer?.length || 0,
-      mimeType: file.mimetype 
+      currentMemory: Math.round(memUsage.heapUsed / 1024 / 1024) + 'MB'
     });
 
-    // Validate input
+    // Step 1: Validation (10%)
+    await job.updateProgress(10);
+    
     if (!file || !file.buffer) {
       throw new Error('No file buffer provided');
     }
 
-    if (!identifier) {
-      throw new Error('No identifier provided');
-    }
-
-    // File size check (5MB limit)
     if (file.buffer.length > 5 * 1024 * 1024) {
       throw new Error('File size exceeds 5MB limit');
     }
 
-    // Minimum file size check (avoid empty files)
     if (file.buffer.length < 100) {
       throw new Error('File is too small to be a valid document');
     }
 
-    // Detect file type with enhanced detection
-    let detectedType = detectFileType(file.buffer, file.originalname);
+    // Step 2: File type detection (20%)
+    await job.updateProgress(20);
     
+    let detectedType = detectFileType(file.buffer, file.originalname);
     if (!detectedType) {
       throw new Error('Unsupported file type. Please upload PDF, DOCX, or DOC files only.');
     }
 
-    logger.info('File type detected', { 
-      identifier, 
-      detectedType,
-      originalMimeType: file.mimetype 
-    });
-
-    // Validate file type against allowed types
-    const allowedTypes = [
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/msword'
-    ];
-
-    if (!allowedTypes.includes(detectedType.mime)) {
-      throw new Error(`File type ${detectedType.mime} is not supported. Please use PDF or DOCX.`);
+    // Step 3: Text extraction (60%)
+    await job.updateProgress(40);
+    
+    const extractedText = await extractTextFromFile(file.buffer, detectedType);
+    if (!extractedText || extractedText.trim().length < 50) {
+      throw new Error('Could not extract meaningful text from the CV.');
     }
 
-    // Generate unique filename with proper extension
+    // Step 4: Text processing (80%)
+    await job.updateProgress(80);
+    
+    const cleanedText = cleanExtractedText(extractedText);
+    if (cleanedText.length < 100) {
+      throw new Error('CV text is too short. Please upload a complete CV.');
+    }
+
+    // Step 5: Save and finalize (100%)
+    await job.updateProgress(95);
+
+    // Generate filename
     const timestamp = Date.now();
     const safeIdentifier = identifier.replace(/[^a-zA-Z0-9]/g, '_');
     const filename = `cv_${safeIdentifier}_${timestamp}.${detectedType.ext}`;
     const filepath = path.join(uploadsDir, filename);
 
-    // Extract text from file
-    logger.info('Extracting text from file', { identifier, type: detectedType.mime });
-    const extractedText = await extractTextFromFile(file.buffer, detectedType);
-    
-    if (!extractedText || extractedText.trim().length < 50) {
-      throw new Error('Could not extract meaningful text from the CV. Please ensure the file contains readable text.');
-    }
-
-    // Clean the extracted text
-    const cleanedText = cleanExtractedText(extractedText);
-    
-    if (cleanedText.length < 100) {
-      throw new Error('CV text is too short. Please upload a complete CV with your work experience and skills.');
-    }
-
-    // Save original file to disk for email attachments and backup
+    // Save file to disk (optional, for email attachments)
     try {
       fs.writeFileSync(filepath, file.buffer);
       logger.info('File saved to disk', { identifier, filepath });
     } catch (fileError) {
       logger.warn('Failed to save file to disk', { identifier, error: fileError.message });
-      // Continue processing even if file save fails
     }
 
-    // Store CV metadata in Redis (24 hour expiry)
+    // Store CV metadata
     const cvMetadata = {
       filename: filename,
       originalName: file.originalname,
@@ -219,99 +101,159 @@ const cvWorker = new Worker('cv-processing', async (job) => {
       uploadedAt: new Date().toISOString(),
       textContent: cleanedText,
       processingStatus: 'completed',
-      textLength: cleanedText.length
+      textLength: cleanedText.length,
+      jobId: jobId
     };
 
-    // Store multiple keys for different access patterns
-    await Promise.all([
-      redis.set(`cv:${identifier}`, JSON.stringify(cvMetadata), 'EX', 86400),
-      redis.set(`cv_text:${identifier}`, cleanedText, 'EX', 86400),
-      redis.set(`cv_file:${identifier}`, filename, 'EX', 86400),
-      redis.set(`cv_status:${identifier}`, 'completed', 'EX', 86400)
-    ]);
-
-    logger.info('CV processing completed successfully', { 
+    await job.updateProgress(100);
+    
+    logger.info('CV processing completed', { 
       identifier, 
-      filename,
+      jobId,
       textLength: cleanedText.length,
-      processingTime: Date.now() - timestamp
+      processingTime: Date.now() - timestamp,
+      finalMemory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB'
     });
 
     return {
       text: cleanedText,
       metadata: cvMetadata,
-      success: true
+      success: true,
+      processingTime: Date.now() - timestamp
     };
 
   } catch (error) {
     logger.error('CV processing failed', { 
       identifier, 
-      error: error.message,
-      stack: error.stack 
+      jobId,
+      error: error.message
     });
-
-    // Store error status in Redis
-    try {
-      await redis.set(`cv_status:${identifier}`, `error:${error.message}`, 'EX', 3600);
-    } catch (redisError) {
-      logger.error('Failed to store error status', { identifier, error: redisError.message });
-    }
-
-    // Re-throw with user-friendly message
-    const userFriendlyMessages = {
-      'Unsupported file type': 'Please upload a PDF or DOCX file only.',
-      'Could not extract': 'Unable to read the CV. Please ensure it\'s a valid PDF or DOCX file.',
-      'File size exceeds': 'File is too large. Please upload a CV smaller than 5MB.',
-      'too short': 'CV content is too brief. Please upload a complete CV.',
-      'Old DOC format': 'Please convert your DOC file to PDF or DOCX format.'
-    };
-
-    const friendlyMessage = Object.keys(userFriendlyMessages).find(key => 
-      error.message.includes(key)
-    );
-
-    throw new Error(friendlyMessage ? userFriendlyMessages[friendlyMessage] : 'Failed to process CV. Please try again with a valid PDF or DOCX file.');
+    throw error;
   }
 }, { 
-  connection: redis,
-  concurrency: 2,
+  connection: queueRedis,
+  concurrency: OPTIMAL_CONCURRENCY, // 12 concurrent CV processing
   settings: {
-    retryProcessDelay: 5000,
-    maxStalledCount: 3
-  }
+    retryProcessDelay: 2000,
+    maxStalledCount: 3,
+    stalledInterval: 30000,
+    maxFailedJobs: 100,
+    maxCompletedJobs: 200
+  },
+  removeOnComplete: 50,
+  removeOnFail: 25
 });
 
-// Enhanced event handlers
+// Helper functions
+function detectFileType(buffer, filename) {
+  try {
+    if (buffer.subarray(0, 4).toString() === '%PDF') {
+      return { mime: 'application/pdf', ext: 'pdf' };
+    }
+    
+    const zipSignature = buffer.subarray(0, 4);
+    if (zipSignature[0] === 0x50 && zipSignature[1] === 0x4B && 
+        (zipSignature[2] === 0x03 || zipSignature[2] === 0x05)) {
+      const bufferStr = buffer.toString('binary', 0, Math.min(buffer.length, 1000));
+      if (bufferStr.includes('word/')) {
+        return { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: 'docx' };
+      }
+    }
+    
+    if (filename) {
+      const ext = filename.toLowerCase().split('.').pop();
+      switch (ext) {
+        case 'pdf': return { mime: 'application/pdf', ext: 'pdf' };
+        case 'docx': return { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: 'docx' };
+        case 'doc': return { mime: 'application/msword', ext: 'doc' };
+        default: return null;
+      }
+    }
+    return null;
+  } catch (error) {
+    logger.error('File type detection failed', { error: error.message });
+    return null;
+  }
+}
+
+async function extractTextFromFile(buffer, detectedType) {
+  try {
+    if (detectedType.mime === 'application/pdf') {
+      const pdfData = await pdfParse(buffer, { max: 0 });
+      return pdfData.text;
+    } else if (detectedType.mime.includes('wordprocessingml') || detectedType.ext === 'docx') {
+      const result = await mammoth.extractRawText({ buffer: buffer });
+      return result.value;
+    } else if (detectedType.mime === 'application/msword' || detectedType.ext === 'doc') {
+      const result = await mammoth.extractRawText({ buffer: buffer });
+      return result.value;
+    } else {
+      throw new Error(`Unsupported file type: ${detectedType.mime}`);
+    }
+  } catch (error) {
+    logger.error('Text extraction failed', { error: error.message, type: detectedType });
+    throw error;
+  }
+}
+
+function cleanExtractedText(rawText) {
+  if (!rawText || typeof rawText !== 'string') {
+    return '';
+  }
+  
+  return rawText
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\t+/g, ' ')
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    .replace(/\s+([,.!?;:])/g, '$1')
+    .replace(/([,.!?;:])\s+/g, '$1 ')
+    .trim();
+}
+
+// Event handlers
 cvWorker.on('completed', (job, result) => {
-  logger.info('CV processing job completed', { 
+  logger.info('CV processing completed', { 
     jobId: job.id,
     identifier: job.data.identifier,
-    textLength: result?.text?.length || 0
+    processingTime: result?.processingTime || 0
   });
 });
 
 cvWorker.on('failed', (job, error) => {
-  logger.error('CV processing job failed', { 
+  logger.error('CV processing failed', { 
     jobId: job.id,
     identifier: job.data?.identifier,
     error: error.message 
   });
 });
 
-cvWorker.on('stalled', (jobId) => {
-  logger.warn('CV processing job stalled', { jobId });
+cvWorker.on('progress', (job, progress) => {
+  logger.info('CV processing progress', { 
+    jobId: job.id,
+    identifier: job.data?.identifier,
+    progress: `${progress}%`
+  });
 });
 
-cvWorker.on('error', (error) => {
-  logger.error('CV worker error', { error: error.message });
-});
+// Memory monitoring
+setInterval(() => {
+  const memUsage = process.memoryUsage();
+  const memPercent = (memUsage.heapUsed / (16 * 1024 * 1024 * 1024)) * 100;
+  
+  if (memPercent > 75) {
+    logger.warn('High memory usage detected', {
+      heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024) + 'MB',
+      heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024) + 'MB',
+      percentage: Math.round(memPercent) + '%'
+    });
+  }
+}, 30000);
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('Received SIGTERM, closing CV worker');
-  await cvWorker.close();
+logger.info(`🚀 CV Worker optimized for 4 CPU cores + 16GB RAM started!`, {
+  concurrency: OPTIMAL_CONCURRENCY,
+  estimatedCapacity: OPTIMAL_CONCURRENCY * 60 + ' CVs/hour'
 });
-
-logger.info('CV worker started with enhanced processing capabilities');
 
 module.exports = cvWorker;

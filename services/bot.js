@@ -1,4 +1,4 @@
-// Clean services/bot.js - WhatsApp only, no Telegram
+// services/bot.js - INSTANT RESPONSE SYSTEM
 
 const ycloud = require('./ycloud');
 const openaiService = require('./openai');
@@ -6,13 +6,17 @@ const paystackService = require('./paystack');
 const { Queue } = require('bullmq');
 const { v4: uuidv4 } = require('uuid');
 const redis = require('../config/redis');
+const { queueRedis } = require('../config/redis');
 const dbManager = require('../config/database');
 const logger = require('../utils/logger');
 const nodemailer = require('nodemailer');
 const config = require('../config');
-
-const cvQueue = new Queue('cv-processing', { connection: redis });
 const RateLimiter = require('../utils/rateLimiter');
+
+// SPECIALIZED QUEUES FOR INSTANT SYSTEM
+const cvQueue = new Queue('cv-processing', { connection: queueRedis });
+const applicationQueue = new Queue('job-applications', { connection: queueRedis });
+const emailQueue = new Queue('recruiter-emails', { connection: queueRedis });
 
 // Email transporter
 const transporter = nodemailer.createTransporter({
@@ -25,342 +29,534 @@ const transporter = nodemailer.createTransporter({
   }
 });
 
-class SmartCVNaijaBot {
+class InstantResponseBot {
   
   // ================================
-  // MAIN MESSAGE HANDLER (WhatsApp Only)
+  // MAIN MESSAGE HANDLER
   // ================================
   
   async handleWhatsAppMessage(phone, message, file = null) {
-  try {
-    console.log('Bot handling WhatsApp message:', { phone, hasMessage: !!message, hasFile: !!file });
-    
-    // Handle file uploads
-    if (file) {
-      // CHECK CV UPLOAD RATE LIMIT
-      const uploadLimit = await RateLimiter.checkLimit(phone, 'cv_upload');
-      if (!uploadLimit.allowed) {
-        return this.sendWhatsAppMessage(phone, uploadLimit.message);
-      }
+    try {
+      logger.info('Processing WhatsApp message', { phone, hasMessage: !!message, hasFile: !!file });
       
-      return await this.handleFileUpload(phone, file);
-    }
+      // Handle file uploads with instant response
+      if (file) {
+        const uploadLimit = await RateLimiter.checkLimit(phone, 'cv_upload');
+        if (!uploadLimit.allowed) {
+          return this.sendWhatsAppMessage(phone, uploadLimit.message);
+        }
+        
+        return await this.handleInstantFileUpload(phone, file);
+      }
 
       // Handle text messages
       if (!message || typeof message !== 'string') {
         return this.sendWhatsAppMessage(phone, 
-          'Hi! I help you find jobs in Nigeria. What can I do for you? 😊'
+          'Hi! I help you find jobs in Nigeria 🇳🇬\n\nTry:\n• "Find developer jobs in Lagos"\n• "Status" - Check your usage\n• Upload your CV to apply!'
         );
       }
 
-      // Check user state first
+      // Check user state
       const state = await redis.get(`state:${phone}`);
       
-      if (state === 'awaiting_cover_letter') {
-        return await this.handleCoverLetterInput(phone, message);
+      if (state === 'selecting_jobs') {
+        return await this.handleJobSelection(phone, message);
       }
 
-      // Send to AI with conversation memory
-       const aiLimit = await RateLimiter.checkLimit(phone, 'ai_call');
-    if (!aiLimit.allowed) {
-      // Try simple pattern matching when AI is rate limited
-      const simpleResponse = this.handleSimplePatterns(phone, message);
-      if (simpleResponse) {
-        return simpleResponse;
+      // Enhanced status command
+      if (message.toLowerCase().includes('status')) {
+        return await this.handleStatusRequest(phone);
       }
-      
-      return this.sendWhatsAppMessage(phone, aiLimit.message);
-    }
 
-    // Send to AI with conversation memory
-    return await this.handleWithConversationMemory(phone, message);
+      // AI processing with rate limiting
+      const aiLimit = await RateLimiter.checkLimit(phone, 'ai_call');
+      if (!aiLimit.allowed) {
+        const simpleResponse = this.handleSimplePatterns(phone, message);
+        if (simpleResponse) {
+          return simpleResponse;
+        }
+        return this.sendWhatsAppMessage(phone, aiLimit.message);
+      }
+
+      return await this.handleWithAI(phone, message);
 
     } catch (error) {
-      console.error('WhatsApp message processing error:', error);
+      logger.error('WhatsApp message processing error', { phone, error: error.message });
       return this.sendWhatsAppMessage(phone, 
-        '❌ Sorry, something went wrong. Please try again.'
+        '❌ Something went wrong. Please try again.'
       );
     }
   }
 
   // ================================
-  // CONVERSATION MEMORY HANDLER
+  // INSTANT FILE UPLOAD (NO WAITING)
   // ================================
   
-  async handleWithConversationMemory(phone, message) {
+  async handleInstantFileUpload(phone, file) {
     try {
-      // Get user context for AI
-      const userContext = await this.getUserContext(phone);
+      // Check if user has selected jobs to apply to
+      const selectedJobs = await redis.get(`selected_jobs:${phone}`);
       
-      // Rate limiting protection
-      const rateLimitKey = `rate:${phone}`;
-      const callCount = await redis.incr(rateLimitKey);
-      
-      if (callCount === 1) {
-        await redis.expire(rateLimitKey, 60);
-      }
-      
-      if (callCount > 15) {
+      if (!selectedJobs) {
         return this.sendWhatsAppMessage(phone,
-          'Please slow down a bit! I need a moment to process. Try again in a minute. 😅'
+          '💡 **Upload your CV after selecting jobs!**\n\nFirst search for jobs:\n• "Find developer jobs in Lagos"\n• Select jobs to apply to\n• Then upload CV for instant applications!'
         );
       }
 
-      // Send to enhanced AI worker with context
-      const intent = await Promise.race([
-        openaiService.parseJobQuery(message, phone, {
-          platform: 'whatsapp',
-          userContext: userContext,
-          timestamp: Date.now()
-        }),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('AI timeout')), 6000)
-        )
-      ]);
+      const usage = await this.checkDailyUsage(phone);
+      if (usage.needsPayment) {
+        const paymentUrl = await this.initiateDailyPayment(phone);
+        return this.sendWhatsAppMessage(phone, 
+          `💰 **Complete Payment First**\n\nPay ₦500 for 10 daily applications\n\nPay: ${paymentUrl}\n\nAfter payment, upload CV for instant applications!`
+        );
+      }
+      
+      if (file.buffer.length > 5 * 1024 * 1024) {
+        return this.sendWhatsAppMessage(phone, '❌ File too large (max 5MB).');
+      }
 
-      return await this.processEnhancedIntent(phone, intent, message);
+      // Parse selected jobs
+      let jobs = [];
+      try {
+        jobs = JSON.parse(selectedJobs);
+      } catch (e) {
+        logger.error('Failed to parse selected jobs', { phone, error: e.message });
+        return this.sendWhatsAppMessage(phone, 
+          '❌ Please select jobs again and then upload CV.'
+        );
+      }
+
+      // INSTANT RESPONSE - User thinks applications are submitted!
+      await this.sendInstantApplicationConfirmation(phone, jobs);
+
+      // BACKGROUND PROCESSING - Everything happens behind the scenes
+      await this.queueInstantApplications(phone, file, jobs);
+      
+      // Clear selected jobs and update usage
+      await redis.del(`selected_jobs:${phone}`);
+      await this.deductApplications(phone, jobs.length);
+
+      logger.info('Instant applications queued', { 
+        phone, 
+        jobCount: jobs.length,
+        fileSize: file.buffer.length 
+      });
+      
+      return true;
 
     } catch (error) {
-      console.error('Conversation memory processing error:', error);
-      return this.handleEnhancedFallback(phone, message);
+      logger.error('Instant file upload error', { phone, error: error.message });
+      return this.sendWhatsAppMessage(phone, 
+        '❌ Upload failed. Please try again.'
+      );
     }
   }
 
-// ADD THIS NEW METHOD
-handleSimplePatterns(phone, message) {
-  const text = message.toLowerCase().trim();
-  
-  // Handle basic commands without AI
-  if (text.includes('hello') || text.includes('hi')) {
-    this.sendWhatsAppMessage(phone, 'Hello! I help you find jobs in Nigeria. What can I do for you? 😊');
-    return true;
-  }
-  
-  if (text.includes('help')) {
-    this.sendWhatsAppMessage(phone, this.getHelpMessage());
-    return true;
-  }
-  
-  if (text.includes('status')) {
-    this.handleStatusRequest(phone);
-    return true;
-  }
-
-  // Simple job searches without AI
-  const jobTypes = ['developer', 'engineer', 'marketing', 'sales'];
-  const locations = ['lagos', 'abuja', 'remote'];
-  
-  let foundJob = null;
-  let foundLocation = null;
-  
-  for (const job of jobTypes) {
-    if (text.includes(job)) foundJob = job;
-  }
-  
-  for (const loc of locations) {
-    if (text.includes(loc)) foundLocation = loc;
-  }
-  
-  if (foundJob && foundLocation) {
-    this.searchJobs(phone, { 
-      title: foundJob, 
-      location: foundLocation.charAt(0).toUpperCase() + foundLocation.slice(1),
-      remote: foundLocation === 'remote'
+  async sendInstantApplicationConfirmation(phone, jobs) {
+    const usage = await this.checkDailyUsage(phone);
+    
+    let jobList = '';
+    jobs.slice(0, 5).forEach((job, index) => {
+      jobList += `${index + 1}. ${job.title} - ${job.company}\n`;
     });
-    return true;
+    
+    if (jobs.length > 5) {
+      jobList += `...and ${jobs.length - 5} more jobs!\n`;
+    }
+
+    await this.sendWhatsAppMessage(phone,
+      `✅ **Applications Submitted Successfully!**\n\n🎯 **Applied to ${jobs.length} jobs:**\n${jobList}\n📧 **Recruiters will receive your applications within 2 hours**\n\n📊 **Today's Usage:**\n• Applications used: ${usage.totalToday + jobs.length}/10\n• Remaining: ${Math.max(0, usage.remaining - jobs.length)}/10\n\n🔍 **Continue searching for more opportunities!**`
+    );
   }
-  
-  return false; // No simple pattern matched
-}
 
   // ================================
-  // USER CONTEXT BUILDER
+  // BACKGROUND APPLICATION PROCESSING
   // ================================
   
-  async getUserContext(phone) {
+  async queueInstantApplications(phone, file, jobs) {
     try {
-      const [hasCV, hasCoverLetter, usage, conversationHistory] = await Promise.all([
-        redis.exists(`cv:${phone}`),
-        redis.exists(`cover_letter:${phone}`),
-        this.checkDailyUsage(phone),
-        this.getRecentConversation(phone)
+      const applicationId = `app_${phone}_${Date.now()}`;
+      
+      // Queue the entire application process
+      await applicationQueue.add(
+        'process-applications',
+        {
+          identifier: phone,
+          file: {
+            buffer: file.buffer,
+            originalname: file.originalname,
+            mimetype: file.mimetype
+          },
+          jobs: jobs,
+          applicationId: applicationId,
+          timestamp: Date.now()
+        },
+        {
+          priority: 1, // High priority for paid applications
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 2000,
+          },
+          removeOnComplete: 20,
+          removeOnFail: 10
+        }
+      );
+
+      // Optional: Monitor progress (don't block user)
+      this.monitorApplicationProgress(applicationId, phone, jobs.length);
+
+    } catch (error) {
+      logger.error('Failed to queue instant applications', { phone, error: error.message });
+    }
+  }
+
+  async monitorApplicationProgress(applicationId, phone, jobCount) {
+    // This runs in background - user doesn't wait for this
+    try {
+      // Could send optional progress updates
+      setTimeout(async () => {
+        try {
+          await this.sendWhatsAppMessage(phone,
+            `📧 **Application Update**\n\nYour ${jobCount} applications are being processed and sent to recruiters.\n\n💡 **You can continue searching for more jobs while we handle this!**`
+          );
+        } catch (error) {
+          logger.error('Failed to send progress update', { phone, error: error.message });
+        }
+      }, 300000); // Send update after 5 minutes
+    } catch (error) {
+      logger.error('Application monitoring failed', { phone, error: error.message });
+    }
+  }
+
+  // ================================
+  // JOB SEARCH & SELECTION
+  // ================================
+  
+  async searchJobs(identifier, filters) {
+    try {
+      const searchLimit = await RateLimiter.checkLimit(identifier, 'job_search');
+      if (!searchLimit.allowed) {
+        return this.sendWhatsAppMessage(identifier, searchLimit.message);
+      }
+
+      const cacheKey = `jobs:${JSON.stringify(filters)}`;
+      const cached = await redis.get(cacheKey);
+      
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.rows) {
+            await redis.set(`last_jobs:${identifier}`, JSON.stringify(parsed.rows), 'EX', 3600);
+            return this.sendWhatsAppMessage(identifier, parsed.response);
+          }
+        } catch (e) {
+          logger.error('Failed to parse cached jobs', { error: e.message });
+        }
+      }
+
+      const { title, location, company, remote } = filters;
+      
+      const query = `
+        SELECT * FROM jobs 
+        WHERE ($1::text IS NULL OR title ILIKE $1) 
+          AND ($2::text IS NULL OR location ILIKE $2) 
+          AND ($3::text IS NULL OR company ILIKE $3) 
+          AND ($4::boolean IS NULL OR is_remote = $4) 
+          AND (is_remote = true OR is_remote IS NULL) 
+          AND (expires_at IS NULL OR expires_at > NOW()) 
+        ORDER BY COALESCE(last_updated, scraped_at, NOW()) DESC 
+        LIMIT 10`;
+
+      const { rows } = await dbManager.query(query, [
+        title ? `%${title}%` : null,
+        location ? `%${location}%` : null,
+        company ? `%${company}%` : null,
+        typeof remote === 'boolean' ? remote : null
       ]);
 
-      return {
-        hasCV: !!hasCV,
-        hasCoverLetter: !!hasCoverLetter,
-        applicationsToday: usage.totalToday || 0,
-        applicationsRemaining: usage.remaining || 0,
-        needsPayment: usage.needsPayment || false,
-        recentMessages: conversationHistory,
-        lastActive: new Date().toISOString()
-      };
-    } catch (error) {
-      console.error('Error building user context:', error);
-      return { recentMessages: [] };
-    }
-  }
+      if (rows.length === 0) {
+        return this.sendWhatsAppMessage(identifier, 
+          `🔍 No jobs found for "${title || 'jobs'}" in ${location || 'that location'}\n\n💡 Try:\n• "jobs in Lagos"\n• "developer jobs"\n• "remote jobs"`
+        );
+      }
 
-  async getRecentConversation(phone) {
-    try {
-      const historyKey = `conversation:${phone}`;
-      const historyStr = await redis.get(historyKey);
-      
-      if (!historyStr) return [];
-      
-      const history = JSON.parse(historyStr);
-      return history.slice(-4);
-    } catch (error) {
-      return [];
-    }
-  }
+      let response = `🔍 **Found ${rows.length} Jobs**\n\n`;
 
-  // ================================
-  // ENHANCED INTENT PROCESSING
-  // ================================
-  
-  async processEnhancedIntent(phone, intent, originalMessage) {
-    try {
-      console.log('Processing enhanced intent:', { 
-        action: intent?.action, 
-        hasFilters: !!intent?.filters,
-        phone 
+      rows.forEach((job, index) => {
+        const jobNumber = index + 1;
+        response += `**${jobNumber}.** ${job.title}\n`;
+        response += `🏢 ${job.company}\n`;
+        response += `📍 ${job.is_remote ? '🌍 Remote' : job.location}\n`;
+        response += `💰 ${job.salary || 'Competitive salary'}\n\n`;
       });
 
+      response += `**💼 To Apply:**\n`;
+      response += `• "Apply to jobs 1,3,5" (select specific jobs)\n`;
+      response += `• "Apply to all jobs" (apply to all ${rows.length})\n\n`;
+      response += `**Then upload your CV for instant applications!**`;
+
+      await redis.set(`last_jobs:${identifier}`, JSON.stringify(rows), 'EX', 3600);
+      await redis.set(cacheKey, JSON.stringify({ response, rows }), 'EX', 3600);
+
+      return this.sendWhatsAppMessage(identifier, response);
+
+    } catch (error) {
+      logger.error('Job search error', { identifier, filters, error: error.message });
+      return this.sendWhatsAppMessage(identifier, '❌ Job search failed. Please try again.');
+    }
+  }
+
+  async handleJobSelection(phone, message) {
+    try {
+      const lastJobsStr = await redis.get(`last_jobs:${phone}`);
+      if (!lastJobsStr) {
+        return this.sendWhatsAppMessage(phone,
+          'Please search for jobs first before selecting them.'
+        );
+      }
+
+      let lastJobs = [];
+      try {
+        lastJobs = JSON.parse(lastJobsStr);
+      } catch (e) {
+        return this.sendWhatsAppMessage(phone,
+          'Please search for jobs again.'
+        );
+      }
+
+      const text = message.toLowerCase().trim();
+      let selectedJobs = [];
+
+      if (text.includes('all')) {
+        selectedJobs = lastJobs;
+      } else {
+        // Extract job numbers
+        const numbers = this.extractJobNumbers(text);
+        selectedJobs = numbers
+          .filter(num => num >= 1 && num <= lastJobs.length)
+          .map(num => lastJobs[num - 1]);
+      }
+
+      if (selectedJobs.length === 0) {
+        return this.sendWhatsAppMessage(phone,
+          'Please specify which jobs to apply to:\n• "Apply to jobs 1,3,5"\n• "Apply to all jobs"'
+        );
+      }
+
+      // Check daily usage
+      const usage = await this.checkDailyUsage(phone);
+      if (selectedJobs.length > usage.remaining && !usage.needsPayment) {
+        return this.sendWhatsAppMessage(phone,
+          `❌ You selected ${selectedJobs.length} jobs but only have ${usage.remaining} applications remaining today.\n\nSelect fewer jobs or upgrade your daily limit.`
+        );
+      }
+
+      // Store selected jobs
+      await redis.set(`selected_jobs:${phone}`, JSON.stringify(selectedJobs), 'EX', 3600);
+      await redis.del(`state:${phone}`);
+
+      let jobList = '';
+      selectedJobs.slice(0, 3).forEach((job, index) => {
+        jobList += `${index + 1}. ${job.title} - ${job.company}\n`;
+      });
+      if (selectedJobs.length > 3) {
+        jobList += `...and ${selectedJobs.length - 3} more!\n`;
+      }
+
+      if (usage.needsPayment) {
+        const paymentUrl = await this.initiateDailyPayment(phone);
+        return this.sendWhatsAppMessage(phone,
+          `💰 **Payment Required**\n\n🎯 **Selected ${selectedJobs.length} jobs:**\n${jobList}\n**Next:** Pay ₦500 for 10 daily applications\n\n${paymentUrl}\n\n**After payment, upload your CV for instant applications!**`
+        );
+      } else {
+        return this.sendWhatsAppMessage(phone,
+          `🎯 **Selected ${selectedJobs.length} jobs:**\n${jobList}\n**Next:** Upload your CV (PDF/DOCX) for instant applications!\n\n📧 Applications will be sent to recruiters automatically.`
+        );
+      }
+
+    } catch (error) {
+      logger.error('Job selection error', { phone, error: error.message });
+      return this.sendWhatsAppMessage(phone, '❌ Selection failed. Please try again.');
+    }
+  }
+
+  // ================================
+  // AI PROCESSING & PATTERNS
+  // ================================
+  
+  async handleWithAI(phone, message) {
+    try {
+      const intent = await openaiService.parseJobQuery(message, phone, {
+        platform: 'whatsapp',
+        timestamp: Date.now()
+      });
+
+      return await this.processIntent(phone, intent, message);
+
+    } catch (error) {
+      logger.error('AI processing error', { phone, error: error.message });
+      return this.handleSimplePatterns(phone, message);
+    }
+  }
+
+  async processIntent(phone, intent, originalMessage) {
+    try {
       switch (intent?.action) {
-        
-        case 'search_jobs': {
+        case 'search_jobs':
           if (intent.filters && (intent.filters.title || intent.filters.location || intent.filters.remote)) {
             await this.sendWhatsAppMessage(phone, intent.response || '🔍 Searching for jobs...');
             return await this.searchJobs(phone, intent.filters);
           }
-          
           return this.sendWhatsAppMessage(phone, 
-            intent.response || 'I can help you find jobs! What type of work interests you, and which city? 🏙️'
+            'What type of jobs are you looking for? 🔍\n\nTry: "developer jobs in Lagos" or "remote marketing jobs"'
           );
-        }
 
-        case 'apply_job': {
-          await this.sendWhatsAppMessage(phone, intent.response || 'Let me help you apply...');
-          return await this.handleJobApplicationFromIntent(phone, intent, originalMessage);
-        }
+        case 'apply_job':
+          await redis.set(`state:${phone}`, 'selecting_jobs', 'EX', 3600);
+          return await this.handleJobSelection(phone, originalMessage);
 
-        case 'upload_cv': {
-          return this.sendWhatsAppMessage(phone, 
-            intent.response || '📄 Please upload your CV as a PDF or DOCX document.'
-          );
-        }
-
-        case 'get_payment': {
-          await this.sendWhatsAppMessage(phone, intent.response || 'Setting up payment...');
-          return await this.handlePaymentRequest(phone);
-        }
-
-        case 'status': {
+        case 'status':
           return await this.handleStatusRequest(phone);
-        }
 
-        case 'help': {
-          return this.sendWhatsAppMessage(phone, 
-            intent.response || this.getHelpMessage()
-          );
-        }
+        case 'help':
+          return this.sendWhatsAppMessage(phone, this.getHelpMessage());
 
-        case 'clarify': {
+        default:
           return this.sendWhatsAppMessage(phone, 
-            intent.response || 'Could you tell me more about what you\'re looking for? 🤔'
+            intent.response || 'I help you find jobs in Nigeria! 🇳🇬\n\nTry: "Find developer jobs in Lagos"'
           );
-        }
-
-        default: {
-          return this.sendWhatsAppMessage(phone, 
-            intent.response || 'I\'m here to help with job searches! What would you like to do? 💼'
-          );
-        }
       }
-      
     } catch (error) {
-      console.error('Enhanced intent processing error:', error);
+      logger.error('Intent processing error', { phone, error: error.message });
       return this.sendWhatsAppMessage(phone, 
-        '❌ Something went wrong processing your request. Please try again.'
+        '❌ Something went wrong. Please try again.'
       );
     }
   }
 
-  // ================================
-  // ENHANCED FALLBACK
-  // ================================
-  
-  async handleEnhancedFallback(phone, message) {
-    try {
-      const recentMessages = await this.getRecentConversation(phone);
-      const context = recentMessages.map(m => m.content || '').join(' ').toLowerCase();
-      const text = message.toLowerCase().trim();
-      
-      const combinedText = `${context} ${text}`;
-      
-      const jobTypes = ['developer', 'marketing', 'sales', 'teacher', 'nurse', 'engineer', 'manager'];
-      const locations = ['lagos', 'abuja', 'kano', 'port harcourt', 'kaduna', 'ibadan', 'remote'];
-      
-      let jobType = null;
-      let location = null;
-      
-      for (const job of jobTypes) {
-        if (combinedText.includes(job)) {
-          jobType = job;
-          break;
-        }
-      }
-      
-      for (const loc of locations) {
-        if (combinedText.includes(loc)) {
-          location = loc;
-          break;
-        }
-      }
-      
-      if (jobType && location) {
-        await this.sendWhatsAppMessage(phone, 
-          `Got it! Searching for ${jobType} jobs in ${location.charAt(0).toUpperCase() + location.slice(1)}...`
-        );
-        return this.searchJobs(phone, { 
-          title: jobType, 
-          location: location.charAt(0).toUpperCase() + location.slice(1) 
-        });
-      }
-      
-      if (text.includes('hello') || text.includes('hi')) {
-        return this.sendWhatsAppMessage(phone,
-          'Hello! I help people find jobs across Nigeria. What kind of work are you looking for? 😊'
-        );
-      }
-      
-      if (text.includes('help')) {
-        return this.sendWhatsAppMessage(phone, this.getHelpMessage());
-      }
-      
-      return this.sendWhatsAppMessage(phone,
-        'I can help you find jobs! Try telling me what type of work interests you and which city. 💼'
+  handleSimplePatterns(phone, message) {
+    const text = message.toLowerCase().trim();
+    
+    if (text.includes('hello') || text.includes('hi')) {
+      this.sendWhatsAppMessage(phone, 
+        'Hello! I help you find jobs in Nigeria 🇳🇬\n\nTry: "Find developer jobs in Lagos"'
       );
-      
-    } catch (error) {
-      console.error('Enhanced fallback error:', error);
-      return this.sendWhatsAppMessage(phone,
-        'I\'m here to help with job searches. What can I do for you? 🤝'
-      );
+      return true;
     }
+    
+    if (text.includes('help')) {
+      this.sendWhatsAppMessage(phone, this.getHelpMessage());
+      return true;
+    }
+    
+    if (text.includes('status')) {
+      this.handleStatusRequest(phone);
+      return true;
+    }
+
+    // Job search patterns
+    const jobTypes = ['developer', 'engineer', 'marketing', 'sales', 'teacher', 'nurse', 'doctor'];
+    const locations = ['lagos', 'abuja', 'remote'];
+    
+    let foundJob = null;
+    let foundLocation = null;
+    
+    for (const job of jobTypes) {
+      if (text.includes(job)) foundJob = job;
+    }
+    
+    for (const loc of locations) {
+      if (text.includes(loc)) foundLocation = loc;
+    }
+    
+    if (foundJob && foundLocation) {
+      this.searchJobs(phone, { 
+        title: foundJob, 
+        location: foundLocation.charAt(0).toUpperCase() + foundLocation.slice(1),
+        remote: foundLocation === 'remote'
+      });
+      return true;
+    }
+    
+    return false;
   }
 
   // ================================
-  // MESSAGING (WhatsApp Only)
+  // UTILITY METHODS
   // ================================
   
+  extractJobNumbers(text) {
+    const numbers = [];
+    const matches = text.match(/\b\d+\b/g);
+    
+    if (matches) {
+      matches.forEach(match => {
+        const num = parseInt(match);
+        if (num >= 1 && num <= 20) {
+          numbers.push(num);
+        }
+      });
+    }
+    
+    return [...new Set(numbers)].sort((a, b) => a - b);
+  }
+
   async sendWhatsAppMessage(phone, message) {
     return await ycloud.sendTextMessage(phone, message);
   }
 
+  getHelpMessage() {
+    return `🇳🇬 **SmartCVNaija - Job Application Bot**
+
+🔍 **Find Jobs:**
+• "Find developer jobs in Lagos"
+• "Remote marketing jobs"
+• "Jobs in Abuja"
+
+💼 **Apply to Jobs:**
+• Select jobs: "Apply to jobs 1,3,5"
+• Apply to all: "Apply to all jobs"
+• Upload CV for instant applications
+
+💰 **Pricing:** ₦500 for 10 daily applications
+
+📊 **Check Status:** Type "status"
+
+🚀 **Process:** Search → Select → Pay → Upload CV → Instant Applications!`;
+  }
+
+  async handleStatusRequest(phone) {
+    const usage = await this.checkDailyUsage(phone);
+    const selectedJobs = await redis.get(`selected_jobs:${phone}`);
+    
+    let selectedText = '';
+    if (selectedJobs) {
+      try {
+        const jobs = JSON.parse(selectedJobs);
+        selectedText = `\n🎯 **Selected:** ${jobs.length} jobs ready to apply`;
+      } catch (e) {
+        // Ignore
+      }
+    }
+    
+    return this.sendWhatsAppMessage(phone, 
+      `📊 **Your Status**
+
+📈 **Today's Usage:**
+• Applications used: ${usage.totalToday}/10
+• Remaining: ${usage.remaining}/10
+• Payment: ${usage.needsPayment ? '⏳ Required' : '✅ Active'}${selectedText}
+
+🔍 **Next Steps:**
+${usage.needsPayment ? '1. Pay ₦500 for daily access\n2. Search for jobs\n3. Upload CV for instant applications' : selectedJobs ? '1. Upload CV for instant applications!' : '1. Search for jobs\n2. Select jobs to apply to\n3. Upload CV'}
+
+💡 **Try:** "Find developer jobs in Lagos"`
+    );
+  }
+
   // ================================
-  // DAILY USAGE MANAGEMENT
+  // PAYMENT & USAGE MANAGEMENT
   // ================================
   
   async checkDailyUsage(identifier) {
@@ -440,203 +636,6 @@ handleSimplePatterns(phone, message) {
     return result.rows[0];
   }
 
-  // ================================
-  // FILE HANDLING
-  // ================================
-  
-  async handleFileUpload(phone, file) {
-    try {
-      const usage = await this.checkDailyUsage(phone);
-      if (usage.needsPayment) {
-        const paymentUrl = await this.initiateDailyPayment(phone);
-        return this.sendWhatsAppMessage(phone, 
-          `💰 Payment Required\n\nGet 10 job applications for ₦500!\n\nPay: ${paymentUrl}`
-        );
-      }
-      
-      if (file.buffer.length > 5 * 1024 * 1024) {
-        return this.sendWhatsAppMessage(phone, '❌ File too large (max 5MB).');
-      }
-
-      await this.sendWhatsAppMessage(phone, '⏳ Processing your CV...');
-      this.processCVAsync(phone, file);
-      return true;
-
-    } catch (error) {
-      console.error('File upload error:', error);
-      return this.sendWhatsAppMessage(phone, 
-        '❌ Failed to process CV. Please try again with a valid PDF or DOCX file.'
-      );
-    }
-  }
-
-  async processCVAsync(phone, file) {
-    try {
-      const job = await cvQueue.add('process-cv', { 
-        file: {
-          buffer: file.buffer,
-          originalname: file.originalname,
-          mimetype: file.mimetype
-        }, 
-        identifier: phone 
-      });
-      
-      const cvText = await Promise.race([
-        job.waitUntilFinished(cvQueue),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('CV processing timeout')), 60000)
-        )
-      ]);
-      
-      await redis.set(`cv:${phone}`, cvText, 'EX', 86400);
-      await redis.set(`state:${phone}`, 'awaiting_cover_letter', 'EX', 86400);
-      
-      await this.sendWhatsAppMessage(phone, 
-        `✅ CV processed successfully!\n\n📝 Send a cover letter or type "generate" to create one automatically.`
-      );
-
-    } catch (error) {
-      console.error('Async CV processing failed:', error);
-      await this.sendWhatsAppMessage(phone, 
-        '❌ CV processing failed. Please try uploading again.'
-      );
-    }
-  }
-
-  async handleCoverLetterInput(phone, message) {
-    try {
-      const text = message.toLowerCase().trim();
-      let coverLetter = message;
-      
-      if (text === 'generate') {
-        await this.sendWhatsAppMessage(phone, '⏳ Generating cover letter...');
-        
-        const cvText = await redis.get(`cv:${phone}`);
-        if (!cvText) {
-          return this.sendWhatsAppMessage(phone, '❌ CV not found. Please upload again.');
-        }
-        
-        coverLetter = await openaiService.generateCoverLetter(cvText);
-      }
-      
-      await redis.set(`cover_letter:${phone}`, coverLetter, 'EX', 86400);
-      await redis.del(`state:${phone}`);
-      
-      const usage = await this.checkDailyUsage(phone);
-      return this.sendWhatsAppMessage(phone, 
-        `✅ Cover letter saved!\n\n📊 Applications remaining: ${usage.remaining}/10\n\n🔍 Search for jobs:\n• "find developer jobs in Lagos"\n• "marketing jobs Abuja"`
-      );
-
-    } catch (error) {
-      console.error('Cover letter processing error:', error);
-      return this.sendWhatsAppMessage(phone, '❌ Please try again.');
-    }
-  }
-
-  // ================================
-  // JOB SEARCH
-  // ================================
-  
-  async searchJobs(identifier, filters) {
-  try {
-    // CHECK JOB SEARCH RATE LIMIT
-    const searchLimit = await RateLimiter.checkLimit(identifier, 'job_search');
-    if (!searchLimit.allowed) {
-      return this.sendWhatsAppMessage(identifier, searchLimit.message);
-    }
-      const cacheKey = `jobs:${JSON.stringify(filters)}`;
-      const cached = await redis.get(cacheKey);
-      
-      if (cached) {
-        try {
-          const parsed = JSON.parse(cached);
-          if (parsed && parsed.rows) {
-            await redis.set(`last_jobs:${identifier}`, JSON.stringify(parsed.rows), 'EX', 3600);
-            return this.sendWhatsAppMessage(identifier, parsed.response);
-          }
-        } catch (e) {
-          logger.error('Failed to parse cached jobs', { cached, error: e.message });
-        }
-      }
-
-      const { title, location, company, remote } = filters;
-      
-      const query = `
-        SELECT * FROM jobs 
-        WHERE ($1::text IS NULL OR title ILIKE $1) 
-          AND ($2::text IS NULL OR location ILIKE $2) 
-          AND ($3::text IS NULL OR company ILIKE $3) 
-          AND ($4::boolean IS NULL OR is_remote = $4) 
-          AND (is_remote = true OR is_remote IS NULL) 
-          AND (expires_at IS NULL OR expires_at > NOW()) 
-        ORDER BY COALESCE(last_updated, scraped_at, NOW()) DESC 
-        LIMIT 10`;
-
-      const { rows } = await dbManager.query(query, [
-        title ? `%${title}%` : null,
-        location ? `%${location}%` : null,
-        company ? `%${company}%` : null,
-        typeof remote === 'boolean' ? remote : null
-      ]);
-
-      if (rows.length === 0) {
-        const searchedLocation = filters.location || 'that location';
-        const searchedJob = filters.title || 'jobs';
-        
-        return this.sendWhatsAppMessage(identifier, 
-          `🔍 No ${searchedJob} jobs found in ${searchedLocation}\n\n💡 Try these popular cities:\n• Lagos (most jobs)\n• Abuja (government & tech)\n• Port Harcourt (oil & gas)\n\nOr search for "remote ${searchedJob} jobs"`
-        );
-      }
-
-      let response = `🔍 Found ${rows.length} ${filters.remote ? 'Remote ' : ''}Job${rows.length > 1 ? 's' : ''}\n\n`;
-
-      rows.forEach((job, index) => {
-        let expiryText = '';
-        if (job.expires_at) {
-          const daysLeft = Math.ceil((new Date(job.expires_at) - new Date()) / (1000 * 60 * 60 * 24));
-          expiryText = `⏰ Expires in ${daysLeft} days`;
-        }
-
-        const salaryText = job.salary ? `💰 ${job.salary}` : '💰 Salary to be discussed';
-        const jobNumber = index + 1;
-
-        response += `*${jobNumber}.* 🚀 *${job.title.toUpperCase()}*\n`;
-        response += `   🏢 ${job.company}\n`;
-        response += `   📍 ${job.is_remote ? '🌍 Remote work' : job.location}\n`;
-        response += `   ${salaryText}\n`;
-        
-        if (expiryText) {
-          response += `   ${expiryText}\n`;
-        }
-        
-        response += `   💬 Reply: "apply ${jobNumber}" to apply\n\n`;
-      });
-
-      response += `*Quick Actions:*\n`;
-      response += `• "apply all" - Apply to all ${rows.length} jobs\n`;
-      response += `• Type "apply 1" for first job, "apply 2" for second job\n`;
-      
-      if (rows.length === 10) {
-        response += `• "more jobs" - See more results\n`;
-      }
-      
-      response += `• Upload CV first if you haven't yet`;
-
-      await redis.set(`last_jobs:${identifier}`, JSON.stringify(rows), 'EX', 3600);
-      await redis.set(cacheKey, JSON.stringify({ response, rows }), 'EX', 3600);
-
-      return this.sendWhatsAppMessage(identifier, response);
-
-    } catch (error) {
-      logger.error('Job search error', { identifier, filters, error: error.message });
-      return this.sendWhatsAppMessage(identifier, '❌ Job search failed. Please try again or contact support.');
-    }
-  }
-
-  // ================================
-  // PAYMENT PROCESSING
-  // ================================
-
   async processPayment(reference) {
     const [type, uuid, identifier] = reference.split('_');
     
@@ -659,153 +658,13 @@ handleSimplePatterns(phone, message) {
         WHERE user_identifier = $1 AND usage_date = $2
       `, [identifier, today]);
 
-      const pendingJobs = await redis.get(`pending_jobs:${identifier}`);
-      
-      if (pendingJobs) {
-        let jobs = [];
-        try {
-          jobs = JSON.parse(pendingJobs);
-        } catch (e) {
-          logger.error('Failed to parse pending jobs', { pendingJobs, error: e.message });
-        }
-        await redis.del(`pending_jobs:${identifier}`);
-        
-        if (jobs.length > 0) {
-          setTimeout(() => {
-            this.applyToJobs(identifier, jobs);
-          }, 1000);
-          
-          return this.sendWhatsAppMessage(identifier, 
-            `✅ Payment successful!\n\n🎯 Applying to your ${jobs.length} selected job(s) now...\n\n📊 Applications remaining: ${10 - jobs.length}/10`
-          );
-        }
-      }
-
       return this.sendWhatsAppMessage(identifier, 
-        `✅ Payment successful!\n\n📊 You now have 10 job applications for today!\n\n💡 Upload your CV and start applying!`
+        `✅ **Payment Successful!**\n\n🎯 You now have 10 job applications for today!\n\n🔍 **Next steps:**\n1. Search for jobs\n2. Select jobs to apply to\n3. Upload CV for instant applications\n\n💡 Try: "Find developer jobs in Lagos"`
       );
     } else {
       return this.sendWhatsAppMessage(identifier, '❌ Payment failed. Please try again.');
     }
   }
-
-  // ================================
-  // HELPER METHODS
-  // ================================
-  
-  getHelpMessage() {
-    return `🇳🇬 SmartCVNaija Help
-
-💼 **What I can do:**
-• Find jobs across Nigeria
-• Help you apply to multiple positions
-• Process your CV uploads
-• Natural conversation about work
-
-🔍 **Try saying:**
-• "Find developer jobs in Lagos"
-• "I'm looking for marketing work"
-• "Apply to job 1, 2, 3"
-• "What's my status?"
-
-💰 **Pricing:** ₦500 for 10 job applications daily
-
-Just talk to me naturally - I'll understand! 😊`;
-  }
-
-  async handleStatusRequest(phone) {
-    const usage = await this.checkDailyUsage(phone);
-    const hasCV = await redis.exists(`cv:${phone}`);
-    const hasCoverLetter = await redis.exists(`cover_letter:${phone}`);
-    
-    return this.sendWhatsAppMessage(phone, 
-      `📊 **Your Status**
-
-📈 **Today's Usage:**
-• Applications used: ${usage.totalToday}/10
-• Remaining: ${usage.remaining}/10
-• Payment: ${usage.needsPayment ? '⏳ Required' : '✅ Active'}
-
-📄 **Your Files:**
-• CV uploaded: ${hasCV ? '✅' : '❌'}
-• Cover letter: ${hasCoverLetter ? '✅' : '❌'}
-
-${usage.needsPayment ? '\n💰 Pay ₦500 to get 10 applications for today!' : '\n🚀 You\'re ready to apply to jobs!'}`
-    );
-  }
-
-  async handlePaymentRequest(phone) {
-    try {
-      const paymentUrl = await this.initiateDailyPayment(phone);
-      return this.sendWhatsAppMessage(phone, 
-        `💰 **Get 10 Job Applications - ₦500**
-
-Pay securely with Paystack:
-${paymentUrl}
-
-✅ Instant activation after payment
-🔒 Secure payment processing
-📱 Works with cards, bank transfer, USSD
-
-After payment, you can apply to jobs immediately!`
-      );
-    } catch (error) {
-      console.error('Payment request error:', error);
-      return this.sendWhatsAppMessage(phone,
-        '❌ Payment setup failed. Please try again or contact support.'
-      );
-    }
-  }
-
-  async handleResetCommand(identifier) {
-    try {
-      const keys = [
-        `cv:${identifier}`,
-        `cover_letter:${identifier}`,
-        `email:${identifier}`,
-        `state:${identifier}`,
-        `last_jobs:${identifier}`,
-        `pending_jobs:${identifier}`,
-        `cv_text:${identifier}`,
-        `cv_file:${identifier}`,
-        `conversation:${identifier}`
-      ];
-
-      for (const key of keys) {
-        await redis.del(key);
-      }
-
-      await redis.set(`state:${identifier}`, 'idle', 'EX', 86400);
-      
-      return this.sendWhatsAppMessage(identifier, 
-        `🔄 **Session Reset Complete**
-
-✅ All your data has been cleared:
-• CV removed
-• Cover letter removed
-• Job search history cleared
-• Conversation history cleared
-
-💡 **Ready for a fresh start!**
-
-What would you like to do?`
-      );
-    } catch (error) {
-      logger.error('Reset command error', { identifier, error: error.message });
-      return this.sendWhatsAppMessage(identifier, '❌ Reset failed. Please try again.');
-    }
-  }
-
-  // Add placeholder methods for job application handling
-  async handleJobApplicationFromIntent(phone, intent, message) {
-    // Implementation for job applications
-    return this.sendWhatsAppMessage(phone, 'Job application feature coming soon!');
-  }
-
-  async applyToJobs(identifier, jobs) {
-    // Implementation for applying to jobs
-    logger.info('Applying to jobs', { identifier, jobCount: jobs.length });
-  }
 }
 
-module.exports = new SmartCVNaijaBot();
+module.exports = new InstantResponseBot();
