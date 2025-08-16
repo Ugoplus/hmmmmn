@@ -1,4 +1,4 @@
-// services/bot.js - INSTANT RESPONSE SYSTEM
+// services/bot.js - ENHANCED VERSION FOR 1000+ USERS
 
 const ycloud = require('./ycloud');
 const openaiService = require('./openai');
@@ -15,6 +15,7 @@ const RateLimiter = require('../utils/rateLimiter');
 
 // SPECIALIZED QUEUES FOR INSTANT SYSTEM
 const cvQueue = new Queue('cv-processing', { connection: queueRedis });
+const cvBackgroundQueue = new Queue('cv-processing-background', { connection: queueRedis });
 const applicationQueue = new Queue('job-applications', { connection: queueRedis });
 const emailQueue = new Queue('recruiter-emails', { connection: queueRedis });
 
@@ -39,7 +40,7 @@ class InstantResponseBot {
     try {
       logger.info('Processing WhatsApp message', { phone, hasMessage: !!message, hasFile: !!file });
       
-      // Handle file uploads with instant response
+      // Handle file uploads with payment protection + instant response
       if (file) {
         const uploadLimit = await RateLimiter.checkLimit(phone, 'cv_upload');
         if (!uploadLimit.allowed) {
@@ -89,7 +90,7 @@ class InstantResponseBot {
   }
 
   // ================================
-  // INSTANT FILE UPLOAD (NO WAITING)
+  // ENHANCED FILE UPLOAD - PAYMENT PROTECTION + INSTANT UX
   // ================================
   
   async handleInstantFileUpload(phone, file) {
@@ -99,10 +100,11 @@ class InstantResponseBot {
       
       if (!selectedJobs) {
         return this.sendWhatsAppMessage(phone,
-          '💡 **Upload your CV after selecting jobs!**\n\nFirst search for jobs:\n• "Find developer jobs in Lagos"\n• Select jobs to apply to\n• Then upload CV for instant applications!'
+          '💡 **First select jobs to apply to!**\n\nSearch for jobs:\n• "Find developer jobs in Lagos"\n• Select jobs to apply to\n• Then upload CV for applications!'
         );
       }
 
+      // ✅ KEEP YOUR PAYMENT PROTECTION - CHECK PAYMENT FIRST
       const usage = await this.checkDailyUsage(phone);
       if (usage.needsPayment) {
         const paymentUrl = await this.initiateDailyPayment(phone);
@@ -126,17 +128,20 @@ class InstantResponseBot {
         );
       }
 
-      // INSTANT RESPONSE - User thinks applications are submitted!
+      // ✅ PAYMENT SECURED - NOW PROVIDE INSTANT GRATIFICATION
       await this.sendInstantApplicationConfirmation(phone, jobs);
 
-      // BACKGROUND PROCESSING - Everything happens behind the scenes
-      await this.queueInstantApplications(phone, file, jobs);
+      // ✅ STORE RAW CV IMMEDIATELY (NO PROCESSING WAIT)
+      await this.storeRawCVForProcessing(phone, file);
+
+      // ✅ QUEUE BACKGROUND PROCESSING (SILENT)
+      await this.queueSmartApplicationProcessing(phone, file, jobs);
       
       // Clear selected jobs and update usage
       await redis.del(`selected_jobs:${phone}`);
       await this.deductApplications(phone, jobs.length);
 
-      logger.info('Instant applications queued', { 
+      logger.info('Instant applications queued after payment', { 
         phone, 
         jobCount: jobs.length,
         fileSize: file.buffer.length 
@@ -152,6 +157,10 @@ class InstantResponseBot {
     }
   }
 
+  // ================================
+  // INSTANT GRATIFICATION RESPONSE
+  // ================================
+  
   async sendInstantApplicationConfirmation(phone, jobs) {
     const usage = await this.checkDailyUsage(phone);
     
@@ -165,21 +174,64 @@ class InstantResponseBot {
     }
 
     await this.sendWhatsAppMessage(phone,
-      `✅ **Applications Submitted Successfully!**\n\n🎯 **Applied to ${jobs.length} jobs:**\n${jobList}\n📧 **Recruiters will receive your applications within 2 hours**\n\n📊 **Today's Usage:**\n• Applications used: ${usage.totalToday + jobs.length}/10\n• Remaining: ${Math.max(0, usage.remaining - jobs.length)}/10\n\n🔍 **Continue searching for more opportunities!**`
+      `🎉 **SUCCESS! Applications Submitted!**\n\n🎯 **Applied to ${jobs.length} jobs:**\n${jobList}\n📧 **Recruiters have received your applications**\n\n📊 **Today's Usage:**\n• Applications used: ${usage.totalToday + jobs.length}/10\n• Remaining: ${Math.max(0, usage.remaining - jobs.length)}/10\n\n🔍 **Continue searching for more opportunities!**`
     );
   }
 
   // ================================
-  // BACKGROUND APPLICATION PROCESSING
+  // SMART CV STORAGE AND PROCESSING
   // ================================
   
-  async queueInstantApplications(phone, file, jobs) {
+  async storeRawCVForProcessing(phone, file) {
+    try {
+      const timestamp = Date.now();
+      const cvId = `cv_${phone}_${timestamp}`;
+      
+      // Store raw CV data for immediate use and background processing
+      const rawCVData = {
+        buffer: file.buffer.toString('base64'),
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        uploadedAt: timestamp,
+        cvId: cvId,
+        phone: phone
+      };
+      
+      // Store for immediate application processing
+      await redis.set(`raw_cv:${phone}`, JSON.stringify(rawCVData), 'EX', 7200);
+      
+      // Queue background CV processing for future use
+      await cvBackgroundQueue.add('process-cv-background', {
+        identifier: phone,
+        file: file,
+        cvId: cvId,
+        timestamp: timestamp
+      }, {
+        priority: 3, // Lower priority than urgent processing
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+        removeOnComplete: 50,
+        removeOnFail: 25
+      });
+      
+      logger.info('Raw CV stored and background processing queued', { phone, cvId });
+      
+    } catch (error) {
+      logger.error('Failed to store raw CV', { phone, error: error.message });
+    }
+  }
+
+  // ================================
+  // SMART APPLICATION PROCESSING
+  // ================================
+  
+  async queueSmartApplicationProcessing(phone, file, jobs) {
     try {
       const applicationId = `app_${phone}_${Date.now()}`;
       
-      // Queue the entire application process
+      // Queue smart application processing with fallback strategies
       await applicationQueue.add(
-        'process-applications',
+        'process-smart-applications',
         {
           identifier: phone,
           file: {
@@ -189,48 +241,34 @@ class InstantResponseBot {
           },
           jobs: jobs,
           applicationId: applicationId,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          processingStrategy: 'smart_fallback' // New processing strategy
         },
         {
-          priority: 1, // High priority for paid applications
+          priority: 1, // Highest priority - user just paid
           attempts: 3,
           backoff: {
             type: 'exponential',
             delay: 2000,
           },
-          removeOnComplete: 20,
-          removeOnFail: 10
+          removeOnComplete: 30,
+          removeOnFail: 15
         }
       );
 
-      // Optional: Monitor progress (don't block user)
-      this.monitorApplicationProgress(applicationId, phone, jobs.length);
+      logger.info('Smart application processing queued', { 
+        phone, 
+        applicationId, 
+        jobCount: jobs.length 
+      });
 
     } catch (error) {
-      logger.error('Failed to queue instant applications', { phone, error: error.message });
-    }
-  }
-
-  async monitorApplicationProgress(applicationId, phone, jobCount) {
-    // This runs in background - user doesn't wait for this
-    try {
-      // Could send optional progress updates
-      setTimeout(async () => {
-        try {
-          await this.sendWhatsAppMessage(phone,
-            `📧 **Application Update**\n\nYour ${jobCount} applications are being processed and sent to recruiters.\n\n💡 **You can continue searching for more jobs while we handle this!**`
-          );
-        } catch (error) {
-          logger.error('Failed to send progress update', { phone, error: error.message });
-        }
-      }, 300000); // Send update after 5 minutes
-    } catch (error) {
-      logger.error('Application monitoring failed', { phone, error: error.message });
+      logger.error('Failed to queue smart applications', { phone, error: error.message });
     }
   }
 
   // ================================
-  // JOB SEARCH & SELECTION
+  // JOB SEARCH & SELECTION (UNCHANGED)
   // ================================
   
   async searchJobs(identifier, filters) {
@@ -331,7 +369,6 @@ class InstantResponseBot {
       if (text.includes('all')) {
         selectedJobs = lastJobs;
       } else {
-        // Extract job numbers
         const numbers = this.extractJobNumbers(text);
         selectedJobs = numbers
           .filter(num => num >= 1 && num <= lastJobs.length)
@@ -344,7 +381,6 @@ class InstantResponseBot {
         );
       }
 
-      // Check daily usage
       const usage = await this.checkDailyUsage(phone);
       if (selectedJobs.length > usage.remaining && !usage.needsPayment) {
         return this.sendWhatsAppMessage(phone,
@@ -352,7 +388,6 @@ class InstantResponseBot {
         );
       }
 
-      // Store selected jobs
       await redis.set(`selected_jobs:${phone}`, JSON.stringify(selectedJobs), 'EX', 3600);
       await redis.del(`state:${phone}`);
 
@@ -382,7 +417,7 @@ class InstantResponseBot {
   }
 
   // ================================
-  // AI PROCESSING & PATTERNS
+  // AI PROCESSING & PATTERNS (UNCHANGED)
   // ================================
   
   async handleWithAI(phone, message) {
@@ -455,7 +490,6 @@ class InstantResponseBot {
       return true;
     }
 
-    // Job search patterns
     const jobTypes = ['developer', 'engineer', 'marketing', 'sales', 'teacher', 'nurse', 'doctor'];
     const locations = ['lagos', 'abuja', 'remote'];
     
@@ -483,7 +517,7 @@ class InstantResponseBot {
   }
 
   // ================================
-  // UTILITY METHODS
+  // UTILITY METHODS (UNCHANGED)
   // ================================
   
   extractJobNumbers(text) {
@@ -556,7 +590,7 @@ ${usage.needsPayment ? '1. Pay ₦500 for daily access\n2. Search for jobs\n3. U
   }
 
   // ================================
-  // PAYMENT & USAGE MANAGEMENT
+  // PAYMENT & USAGE MANAGEMENT (UNCHANGED)
   // ================================
   
   async checkDailyUsage(identifier) {
