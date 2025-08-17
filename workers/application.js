@@ -87,6 +87,8 @@ const applicationWorker = new Worker('job-applications', async (job) => {
   }
 }, { 
   connection: queueRedis,
+    prefix: "queue:", prefix: "queue:",
+  prefix: 'queue:',
   concurrency: 8,
   settings: {
     retryProcessDelay: 10000,

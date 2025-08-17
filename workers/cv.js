@@ -1,4 +1,4 @@
-// workers/cv.js - OPTIMIZED FOR 1000+ USERS
+// workers/cv.js - FIXED VERSION FOR 1000+ USERS
 
 const { Worker } = require('bullmq');
 const { queueRedis } = require('../config/redis');
@@ -16,14 +16,15 @@ if (!fs.existsSync(uploadsDir)) {
   logger.info('Created uploads directory');
 }
 
-// ✅ SCALED SETTINGS FOR 1000+ USERS
-const OPTIMAL_CONCURRENCY = 30; // Increased from 12 to 30
-const MAX_MEMORY_USAGE = 12;    // Use 12GB of 16GB RAM
-const MEMORY_CHECK_INTERVAL = 15000; // Check every 15 seconds
+// ? SCALED SETTINGS FOR 1000+ USERS
+const OPTIMAL_CONCURRENCY = 30;
+const MAX_MEMORY_USAGE = 12;
+const MEMORY_CHECK_INTERVAL = 15000;
 
-// Enhanced CV worker with high concurrency and memory management
+// ? FIXED: Enhanced CV worker with proper async handling
 const cvWorker = new Worker('cv-processing', async (job) => {
   const { file, identifier, jobId, priority } = job.data;
+  const timestamp = Date.now();
   
   try {
     // Memory monitoring at job start
@@ -38,6 +39,75 @@ const cvWorker = new Worker('cv-processing', async (job) => {
     });
 
     // Step 1: Validation (10%)
+    await job.updateProgress(10);
+    
+    if (!file || !file.buffer) {
+      throw new Error('No file buffer provided');
+    }
+
+    if (file.buffer.length > 5 * 1024 * 1024) {
+      throw new Error('File size exceeds 5MB limit');
+    }
+
+    if (file.buffer.length < 100) {
+      throw new Error('File is too small to be a valid document');
+    }
+
+    // Step 2: File type detection (20%)
+    await job.updateProgress(20);
+    
+    let detectedType = detectFileType(file.buffer, file.originalname);
+    if (!detectedType) {
+      throw new Error('Unsupported file type. Please upload PDF, DOCX, or DOC files only.');
+    }
+
+    // Step 3: Text extraction with memory optimization (40%)
+    await job.updateProgress(40);
+    
+    const extractedText = await extractTextFromFileOptimized(file.buffer, detectedType);
+    if (!extractedText || extractedText.trim().length < 50) {
+      throw new Error('Could not extract meaningful text from the CV.');
+    }
+
+    // Step 4: Text processing and cleanup (60%)
+    await job.updateProgress(60);
+    
+    const cleanedText = cleanExtractedText(extractedText);
+    if (cleanedText.length < 100) {
+      throw new Error('CV text is too short. Please upload a complete CV.');
+    }
+
+    // Step 5: Save file and finalize (80%)
+    await job.updateProgress(80);
+
+    // Generate filename
+    const safeIdentifier = identifier.replace(/[^a-zA-Z0-9]/g, '_');
+    const filename = `cv_${safeIdentifier}_${timestamp}.${detectedType.ext}`;
+    const filepath = path.join(uploadsDir, filename);
+
+    // Save file to disk (for email attachments)
+    try {
+      fs.writeFileSync(filepath, file.buffer);
+      logger.info('File saved to disk', { identifier, filepath });
+    } catch (fileError) {
+      logger.warn('Failed to save file to disk', { identifier, error: fileError.message });
+    }
+
+    // Store CV metadata
+    const cvMetadata = {
+      filename: filename,
+      originalName: file.originalname,
+      filepath: filepath,
+      mimeType: detectedType.mime,
+      size: file.buffer.length,
+      uploadedAt: new Date().toISOString(),
+      textContent: cleanedText,
+      processingStatus: 'completed',
+      textLength: cleanedText.length,
+      jobId: jobId,
+      priority: priority || 'normal'
+    };
+
     await job.updateProgress(100);
     
     // Memory cleanup after processing
@@ -70,7 +140,9 @@ const cvWorker = new Worker('cv-processing', async (job) => {
   }
 }, { 
   connection: queueRedis,
-  concurrency: OPTIMAL_CONCURRENCY, // 30 concurrent CV processing
+    prefix: "queue:", prefix: "queue:",
+  prefix: 'queue:', // ? FIXED: Added prefix for BullMQ compatibility
+  concurrency: OPTIMAL_CONCURRENCY,
   settings: {
     retryProcessDelay: 2000,
     maxStalledCount: 3,
@@ -123,7 +195,7 @@ function detectFileType(buffer, filename) {
 async function extractTextFromFileOptimized(buffer, detectedType) {
   try {
     if (detectedType.mime === 'application/pdf') {
-      // ✅ Optimized PDF parsing with memory limits
+      // ? Optimized PDF parsing with memory limits
       const pdfData = await pdfParse(buffer, { 
         max: 0,              // Process all pages
         version: 'v1.10.100' // Use stable version
@@ -131,7 +203,7 @@ async function extractTextFromFileOptimized(buffer, detectedType) {
       return pdfData.text;
       
     } else if (detectedType.mime.includes('wordprocessingml') || detectedType.ext === 'docx') {
-      // ✅ Optimized DOCX parsing
+      // ? Optimized DOCX parsing
       const result = await mammoth.extractRawText({ 
         buffer: buffer,
         options: {
@@ -142,7 +214,7 @@ async function extractTextFromFileOptimized(buffer, detectedType) {
       return result.value;
       
     } else if (detectedType.mime === 'application/msword' || detectedType.ext === 'doc') {
-      // ✅ DOC file handling
+      // ? DOC file handling
       const result = await mammoth.extractRawText({ buffer: buffer });
       return result.value;
       
@@ -186,7 +258,6 @@ function cleanExtractedText(rawText) {
 // MEMORY MANAGEMENT SYSTEM
 // ================================
 
-// Global memory monitoring
 let memoryWarningCount = 0;
 const MAX_MEMORY_WARNINGS = 3;
 
@@ -340,7 +411,7 @@ process.on('SIGINT', async () => {
 // STARTUP LOGGING
 // ================================
 
-logger.info(`🚀 Scaled CV Worker started with high-performance settings!`, {
+logger.info(`?? Scaled CV Worker started with high-performance settings!`, {
   concurrency: OPTIMAL_CONCURRENCY,
   maxMemoryGB: MAX_MEMORY_USAGE,
   memoryCheckInterval: MEMORY_CHECK_INTERVAL,
@@ -349,74 +420,4 @@ logger.info(`🚀 Scaled CV Worker started with high-performance settings!`, {
   platform: process.platform
 });
 
-module.exports = cvWorker;(10);
-    
-    if (!file || !file.buffer) {
-      throw new Error('No file buffer provided');
-    }
-
-    if (file.buffer.length > 5 * 1024 * 1024) {
-      throw new Error('File size exceeds 5MB limit');
-    }
-
-    if (file.buffer.length < 100) {
-      throw new Error('File is too small to be a valid document');
-    }
-
-    // Step 2: File type detection (20%)
-    await job.updateProgress(20);
-    
-    let detectedType = detectFileType(file.buffer, file.originalname);
-    if (!detectedType) {
-      throw new Error('Unsupported file type. Please upload PDF, DOCX, or DOC files only.');
-    }
-
-    // Step 3: Text extraction with memory optimization (60%)
-    await job.updateProgress(40);
-    
-    const extractedText = await extractTextFromFileOptimized(file.buffer, detectedType);
-    if (!extractedText || extractedText.trim().length < 50) {
-      throw new Error('Could not extract meaningful text from the CV.');
-    }
-
-    // Step 4: Text processing and cleanup (80%)
-    await job.updateProgress(80);
-    
-    const cleanedText = cleanExtractedText(extractedText);
-    if (cleanedText.length < 100) {
-      throw new Error('CV text is too short. Please upload a complete CV.');
-    }
-
-    // Step 5: Save and finalize (100%)
-    await job.updateProgress(95);
-
-    // Generate filename
-    const timestamp = Date.now();
-    const safeIdentifier = identifier.replace(/[^a-zA-Z0-9]/g, '_');
-    const filename = `cv_${safeIdentifier}_${timestamp}.${detectedType.ext}`;
-    const filepath = path.join(uploadsDir, filename);
-
-    // Save file to disk (for email attachments)
-    try {
-      fs.writeFileSync(filepath, file.buffer);
-      logger.info('File saved to disk', { identifier, filepath });
-    } catch (fileError) {
-      logger.warn('Failed to save file to disk', { identifier, error: fileError.message });
-    }
-
-    // Store CV metadata
-    const cvMetadata = {
-      filename: filename,
-      originalName: file.originalname,
-      filepath: filepath,
-      mimeType: detectedType.mime,
-      size: file.buffer.length,
-      uploadedAt: new Date().toISOString(),
-      textContent: cleanedText,
-      processingStatus: 'completed',
-      textLength: cleanedText.length,
-      jobId: jobId,
-      priority: priority || 'normal'
-    };
-
-    await job.updateProgress
+module.exports = cvWorker;

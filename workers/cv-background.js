@@ -97,6 +97,7 @@ const backgroundCVWorker = new Worker('cv-processing-background', async (job) =>
   }
 }, {
   connection: queueRedis,
+    prefix: "queue:",
   concurrency: BACKGROUND_CONCURRENCY, // 20 background processors
   settings: {
     retryProcessDelay: 5000,

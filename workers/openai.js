@@ -221,7 +221,9 @@ Remember: Use conversation history to avoid repeating questions!`;
     }
   },
   { 
-    connection: redis, 
+    connection: redis,
+    prefix: "queue:",
+    prefix: 'queue:',
     concurrency: 2 
   }
 );

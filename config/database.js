@@ -1,17 +1,4 @@
-
-// @ts-nocheck
 // config/database.js - SCALED DATABASE FOR 1000+ USERS
-const { Pool } = require('pg');
-const config = require('./index');
-const logger = require('../utils/logger');
-
-class DatabaseManager {
-  constructor() {
-    this.pool = null;
-    this.isConnected = false;
-  }
-
- // config/database.js - SCALED DATABASE FOR 1000+ USERS
 
 const { Pool } = require('pg');
 const config = require('./index');
@@ -35,7 +22,7 @@ class DatabaseManager {
     try {
       this.connectionAttempts++;
       
-      // ✅ SCALED CONFIGURATION FOR 1000+ USERS
+      // ? SCALED CONFIGURATION FOR 1000+ USERS
       this.pool = new Pool({
         host: config.get('database.host'),
         port: config.get('database.port'),
@@ -43,39 +30,39 @@ class DatabaseManager {
         user: config.get('database.user'),
         password: config.get('database.password'),
         
-        // ✅ INCREASED CONNECTION POOL
+        // ? INCREASED CONNECTION POOL
         max: 50,                    // Increased from 20 to 50
         min: 10,                    // Minimum connections always available
         
-        // ✅ OPTIMIZED TIMEOUTS
+        // ? OPTIMIZED TIMEOUTS
         idleTimeoutMillis: 10000,   // Close idle connections after 10s
         connectionTimeoutMillis: 3000, // 3s connection timeout
         acquireTimeoutMillis: 30000,   // 30s to acquire connection
         
-        // ✅ STATEMENT TIMEOUT
+        // ? STATEMENT TIMEOUT
         statement_timeout: 30000,   // 30s statement timeout
         query_timeout: 30000,       // 30s query timeout
         
-        // ✅ APPLICATION IDENTIFICATION
+        // ? APPLICATION IDENTIFICATION
         application_name: 'smartcv_production',
         
-        // ✅ SSL CONFIGURATION
+        // ? SSL CONFIGURATION
         ssl: process.env.NODE_ENV === 'production' ? {
           rejectUnauthorized: false
         } : false,
         
-        // ✅ CONNECTION VALIDATION
+        // ? CONNECTION VALIDATION
         keepAlive: true,
         keepAliveInitialDelayMillis: 10000,
         
-        // ✅ ERROR HANDLING
+        // ? ERROR HANDLING
         allowExitOnIdle: false
       });
 
-      // ✅ EVENT LISTENERS FOR MONITORING
+      // ? EVENT LISTENERS FOR MONITORING
       this.setupEventListeners();
 
-      // ✅ TEST CONNECTION WITH TIMEOUT
+      // ? TEST CONNECTION WITH TIMEOUT
       const testClient = await this.pool.connect();
       const startTime = Date.now();
       await testClient.query('SELECT NOW() as server_time, version() as server_version');
@@ -93,7 +80,7 @@ class DatabaseManager {
         minConnections: 10
       });
       
-      // ✅ START MONITORING
+      // ? START MONITORING
       this.startMonitoring();
       
       return this.pool;
@@ -146,7 +133,7 @@ class DatabaseManager {
     });
   }
 
-  // ✅ ENHANCED QUERY METHOD WITH MONITORING
+  // ? ENHANCED QUERY METHOD WITH MONITORING
   async query(text, params) {
     if (!this.isConnected || !this.pool) {
       throw new Error('Database not connected');
@@ -168,11 +155,11 @@ class DatabaseManager {
       const result = await this.pool.query(text, params);
       const executionTime = Date.now() - startTime;
       
-      // ✅ PERFORMANCE TRACKING
+      // ? PERFORMANCE TRACKING
       this.queryCount++;
       this.totalQueryTime += executionTime;
       
-      // ✅ SLOW QUERY DETECTION
+      // ? SLOW QUERY DETECTION
       if (executionTime > 1000) { // Queries taking more than 1 second
         this.slowQueryCount++;
         logger.warn('Slow database query detected', {
@@ -210,7 +197,7 @@ class DatabaseManager {
     }
   }
 
-  // ✅ ENHANCED HEALTH CHECK
+  // ? ENHANCED HEALTH CHECK
   async healthCheck() {
     try {
       const startTime = Date.now();
@@ -243,7 +230,7 @@ class DatabaseManager {
     }
   }
 
-  // ✅ CONNECTION POOL STATUS
+  // ? CONNECTION POOL STATUS
   getPoolStatus() {
     if (!this.pool) {
       return {
@@ -269,7 +256,7 @@ class DatabaseManager {
     };
   }
 
-  // ✅ PERFORMANCE MONITORING
+  // ? PERFORMANCE MONITORING
   startMonitoring() {
     // Log pool stats every 5 minutes
     setInterval(() => {
@@ -321,7 +308,7 @@ class DatabaseManager {
     }, 3600000); // Every hour
   }
 
-  // ✅ CONNECTION OPTIMIZATION
+  // ? CONNECTION OPTIMIZATION
   async optimizeConnections() {
     try {
       // Execute optimization queries
@@ -336,7 +323,7 @@ class DatabaseManager {
     }
   }
 
-  // ✅ GRACEFUL SHUTDOWN
+  // ? GRACEFUL SHUTDOWN
   async close() {
     if (this.pool) {
       try {
@@ -349,7 +336,7 @@ class DatabaseManager {
     }
   }
 
-  // ✅ TRANSACTION SUPPORT
+  // ? TRANSACTION SUPPORT
   async transaction(callback) {
     const client = await this.pool.connect();
     
@@ -366,7 +353,7 @@ class DatabaseManager {
     }
   }
 
-  // ✅ BATCH OPERATIONS
+  // ? BATCH OPERATIONS
   async batchQuery(queries) {
     const results = [];
     const client = await this.pool.connect();
@@ -383,10 +370,10 @@ class DatabaseManager {
   }
 }
 
-// ✅ CREATE SINGLETON INSTANCE
+// ? CREATE SINGLETON INSTANCE
 const dbManager = new DatabaseManager();
 
-// ✅ RUN OPTIMIZATION EVERY 6 HOURS
+// ? RUN OPTIMIZATION EVERY 6 HOURS
 setInterval(() => {
   dbManager.optimizeConnections();
 }, 21600000);

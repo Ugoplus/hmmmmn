@@ -1,16 +1,20 @@
-// services/openai.js - Optimized with enhanced pattern matching for partial queries
+
+// services/openai.js - Fixed version with duplicate removed
 
 const { Queue, QueueEvents } = require('bullmq');
 const crypto = require('crypto');
 const redis = require('../config/redis');
 const logger = require('../utils/logger');
-const redis = require('../config/redis');
+// REMOVED: const redis = require('../config/redis'); // This was the duplicate
 const { queueRedis } = require('../config/redis');
 const RateLimiter = require('../utils/rateLimiter');
 
+
 // Enhanced queue configuration for better performance
 const openaiQueue = new Queue('openai-tasks', { 
-  connection: queueRedis.duplicate(), // Use separate Redis for queues
+  connection: queueRedis, prefix: "queue:", prefix: "queue:",
+    prefix: "queue:",
+  prefix: 'queue:',
   defaultJobOptions: {
     attempts: 3,
     backoff: {
@@ -31,7 +35,7 @@ const openaiQueue = new Queue('openai-tasks', {
 
 // Create QueueEvents with separate connection
 const queueEvents = new QueueEvents('openai-tasks', { 
-  connection: queueRedis.duplicate(),
+  connection: queueRedis, prefix: "queue:", prefix: "queue:",
 });
 
 queueEvents.on('ready', () => {

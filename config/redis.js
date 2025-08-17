@@ -1,93 +1,98 @@
-// config/redis.js - OPTIMIZED FOR 1000+ USERS HIGH PERFORMANCE
+// config/redis.js - VPS PRODUCTION CONFIGURATION
 
 const Redis = require('ioredis');
 const config = require('./index');
 const logger = require('../utils/logger');
 
-// ✅ ENHANCED REDIS CONFIGURATION FOR HIGH CONCURRENCY
+// ✅ VPS REDIS CONFIGURATION
 const redisConfig = {
-  host: config.get('redis.host'),
-  port: config.get('redis.port'),
-  password: config.get('redis.password'),
+  host: config.get('redis.host'), // Your VPS IP or domain
+  port: config.get('redis.port'), // Default 6379
+  password: config.get('redis.password'), // Set strong password
   
-  // ✅ CRITICAL SCALING OPTIMIZATIONS
-  maxRetriesPerRequest: 2,        // Reduced retries for faster failures
-  retryDelayOnFailover: 50,       // Faster retry (was 100)
-  connectTimeout: 5000,           // Faster connection timeout (was 10000)
-  lazyConnect: true,              // Connect only when needed
-  keepAlive: 30000,               // Keep connections alive
-  family: 4,                      // Force IPv4 for reliability
+  // ✅ VPS-OPTIMIZED SETTINGS
+  maxRetriesPerRequest: 2,
+  retryDelayOnFailover: 50,
+  connectTimeout: 10000,           // Increased for VPS latency
+  lazyConnect: true,
+  keepAlive: 30000,
+  family: 4,                       // Force IPv4
   
-  // ✅ CONNECTION POOL OPTIMIZATION
-  enableReadyCheck: false,        // Skip ready check for performance
-  enableOfflineQueue: false,      // Disable offline queue to prevent memory buildup
+  // ✅ VPS CONNECTION SETTINGS
+  enableReadyCheck: true,          // Enable for VPS
+  enableOfflineQueue: false,
+  commandTimeout: 8000,            // Increased timeout for VPS
   
-  // ✅ MEMORY AND PERFORMANCE SETTINGS
-  keyPrefix: 'smartcv:',          // Namespace all keys
-  db: 0,                          // Use default database
+  // ✅ VPS SECURITY & PERFORMANCE
+  keyPrefix: 'smartcv:',
+  db: 0,
   
-  // ✅ COMMAND OPTIMIZATION
-  commandTimeout: 5000,           // 5 second command timeout
+  // ✅ VPS RECONNECTION SETTINGS
+  reconnectOnError: (err) => {
+    const targetError = 'READONLY';
+    if (err.message.includes(targetError)) {
+      return true;
+    }
+    return false;
+  },
   
-  // ✅ BUFFERING SETTINGS
-  enableAutoPipelining: true,     // Enable automatic command pipelining
-  maxMultiplexedConnections: 10,  // Multiple connections for high load
+  // ✅ VPS NETWORK OPTIMIZATION
+  enableAutoPipelining: true,
+  maxMultiplexedConnections: 5,    // Reduced for VPS
   
-  // ✅ ERROR HANDLING
+  // ✅ VPS ERROR HANDLING
   maxRetriesPerRequest: 2,
   retryDelayOnClusterDown: 300,
   retryDelayOnFailover: 100,
   
-  // ✅ MEMORY MANAGEMENT
-  dropBufferSupport: false,       // Keep buffer support for file operations
-  
-  // ✅ RECONNECTION SETTINGS
-  reconnectOnError: (err) => {
-    const targetError = 'READONLY';
-    return err.message.includes(targetError);
-  }
+  // ✅ VPS-SPECIFIC SETTINGS
+  dropBufferSupport: false,
+  showFriendlyErrorStack: process.env.NODE_ENV === 'development'
 };
 
-// ✅ MAIN REDIS INSTANCE FOR CACHING
+// ✅ MAIN REDIS INSTANCE
 const redis = new Redis(redisConfig);
 
-// ✅ SEPARATE REDIS INSTANCE FOR BULLMQ QUEUES (BETTER PERFORMANCE)
 const queueRedis = new Redis({
   ...redisConfig,
-  db: 1,                          // Different database for queues
-  maxRetriesPerRequest: null,     // Required for BullMQ
-  enableAutoPipelining: false,    // Disable for queue operations
-  keyPrefix: 'queue:',            // Different prefix for queues
+  db: 1,
+  maxRetriesPerRequest: null, // Required for BullMQ
+  enableReadyCheck: false,    // REQUIRED: Override to false for BullMQ compatibility
+  keyPrefix: '',              // REQUIRED: Override to empty to avoid double-prefixing with BullMQ's prefix
+  enableAutoPipelining: false, // Disable for queue operations
+  commandTimeout: 10000       // Longer timeout for queue operations
 });
 
-// ✅ SEPARATE REDIS INSTANCE FOR SESSION DATA
+// ✅ SESSION REDIS (Separate DB for sessions)
 const sessionRedis = new Redis({
   ...redisConfig,
-  db: 2,                          // Different database for sessions
+  db: 2,
   keyPrefix: 'session:',
-  commandTimeout: 3000,           // Faster timeout for sessions
+  commandTimeout: 5000,            // Faster timeout for sessions
+  maxMultiplexedConnections: 3     // Lower for sessions
 });
 
-// ✅ SET EVENT LISTENERS AND LIMITS
-redis.setMaxListeners(25);        // Increased from 20
-queueRedis.setMaxListeners(25);
-sessionRedis.setMaxListeners(15);
+// ✅ VPS CONNECTION MONITORING
+redis.setMaxListeners(30);
+queueRedis.setMaxListeners(30);
+sessionRedis.setMaxListeners(20);
 
 // ================================
-// CONNECTION EVENT HANDLERS
+// VPS CONNECTION EVENT HANDLERS
 // ================================
 
-// Main Redis events
+// Main Redis events with VPS-specific logging
 redis.on('error', (error) => {
-  logger.error('Main Redis connection error', { 
+  logger.error('Main Redis VPS connection error', { 
     error: error.message,
     host: config.get('redis.host'),
-    port: config.get('redis.port')
+    port: config.get('redis.port'),
+    code: error.code
   });
 });
 
 redis.on('connect', () => {
-  logger.info('Main Redis connected successfully', { 
+  logger.info('Main Redis VPS connected successfully', { 
     host: config.get('redis.host'),
     port: config.get('redis.port'),
     db: redisConfig.db
@@ -95,92 +100,111 @@ redis.on('connect', () => {
 });
 
 redis.on('ready', () => {
-  logger.info('Main Redis ready for commands');
+  logger.info('Main Redis VPS ready for commands');
 });
 
 redis.on('reconnecting', (delay) => {
-  logger.warn('Main Redis reconnecting...', { delay });
+  logger.warn('Main Redis VPS reconnecting...', { 
+    delay,
+    host: config.get('redis.host')
+  });
 });
 
 redis.on('close', () => {
-  logger.warn('Main Redis connection closed');
+  logger.warn('Main Redis VPS connection closed');
 });
 
 // Queue Redis events
 queueRedis.on('error', (error) => {
-  logger.error('Queue Redis connection error', { 
+  logger.error('Queue Redis VPS connection error', { 
     error: error.message,
-    db: 1
+    db: 1,
+    host: config.get('redis.host')
   });
 });
 
 queueRedis.on('connect', () => {
-  logger.info('Queue Redis connected successfully', { db: 1 });
+  logger.info('Queue Redis VPS connected successfully', { 
+    db: 1,
+    host: config.get('redis.host')
+  });
 });
 
 queueRedis.on('ready', () => {
-  logger.info('Queue Redis ready for commands');
+  logger.info('Queue Redis VPS ready for commands');
 });
 
 // Session Redis events
 sessionRedis.on('error', (error) => {
-  logger.error('Session Redis connection error', { 
+  logger.error('Session Redis VPS connection error', { 
     error: error.message,
-    db: 2
+    db: 2,
+    host: config.get('redis.host')
   });
 });
 
 sessionRedis.on('connect', () => {
-  logger.info('Session Redis connected successfully', { db: 2 });
+  logger.info('Session Redis VPS connected successfully', { 
+    db: 2,
+    host: config.get('redis.host')
+  });
 });
 
 // ================================
-// PERFORMANCE MONITORING
+// VPS PERFORMANCE MONITORING
 // ================================
 
 let redisOperationCount = 0;
 let redisErrorCount = 0;
 let totalResponseTime = 0;
+let slowOperationCount = 0;
 
-// Monitor Redis performance
+// Enhanced monitoring for VPS
 function monitorRedisOperation(operation, startTime) {
   const responseTime = Date.now() - startTime;
   redisOperationCount++;
   totalResponseTime += responseTime;
   
-  if (responseTime > 1000) { // Log slow operations
-    logger.warn('Slow Redis operation detected', {
+  // VPS-specific slow operation threshold (higher than local)
+  if (responseTime > 2000) { // 2 seconds for VPS
+    slowOperationCount++;
+    logger.warn('Slow Redis VPS operation detected', {
       operation,
-      responseTime: responseTime + 'ms'
+      responseTime: responseTime + 'ms',
+      host: config.get('redis.host')
     });
   }
 }
 
-// Log Redis performance stats every 5 minutes
+// VPS performance stats every 5 minutes
 setInterval(() => {
   if (redisOperationCount > 0) {
     const avgResponseTime = Math.round(totalResponseTime / redisOperationCount);
     const errorRate = Math.round((redisErrorCount / redisOperationCount) * 100);
+    const slowRate = Math.round((slowOperationCount / redisOperationCount) * 100);
     
-    logger.info('Redis Performance Stats', {
+    logger.info('Redis VPS Performance Stats', {
       totalOperations: redisOperationCount,
       averageResponseTime: avgResponseTime + 'ms',
       errorRate: errorRate + '%',
-      errorsCount: redisErrorCount
+      slowOperationRate: slowRate + '%',
+      errorsCount: redisErrorCount,
+      slowCount: slowOperationCount,
+      vpsHost: config.get('redis.host')
     });
     
     // Reset counters
     redisOperationCount = 0;
     redisErrorCount = 0;
     totalResponseTime = 0;
+    slowOperationCount = 0;
   }
 }, 300000);
 
 // ================================
-// ENHANCED REDIS WRAPPER FUNCTIONS
+// VPS-OPTIMIZED REDIS WRAPPER
 // ================================
 
-// Wrapper for Redis operations with monitoring
 const redisWrapper = {
   async get(key) {
     const startTime = Date.now();
@@ -190,7 +214,11 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis GET error', { key, error: error.message });
+      logger.error('Redis VPS GET error', { 
+        key, 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   },
@@ -203,7 +231,11 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis SET error', { key, error: error.message });
+      logger.error('Redis VPS SET error', { 
+        key, 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   },
@@ -216,7 +248,11 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis DEL error', { key, error: error.message });
+      logger.error('Redis VPS DEL error', { 
+        key, 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   },
@@ -229,7 +265,11 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis EXISTS error', { key, error: error.message });
+      logger.error('Redis VPS EXISTS error', { 
+        key, 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   },
@@ -242,7 +282,11 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis KEYS error', { pattern, error: error.message });
+      logger.error('Redis VPS KEYS error', { 
+        pattern, 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   },
@@ -255,7 +299,11 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis TTL error', { key, error: error.message });
+      logger.error('Redis VPS TTL error', { 
+        key, 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   },
@@ -268,7 +316,11 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis EXPIRE error', { key, error: error.message });
+      logger.error('Redis VPS EXPIRE error', { 
+        key, 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   },
@@ -281,7 +333,11 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis INCR error', { key, error: error.message });
+      logger.error('Redis VPS INCR error', { 
+        key, 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   },
@@ -294,20 +350,23 @@ const redisWrapper = {
       return result;
     } catch (error) {
       redisErrorCount++;
-      logger.error('Redis PING error', { error: error.message });
+      logger.error('Redis VPS PING error', { 
+        error: error.message,
+        host: config.get('redis.host')
+      });
       throw error;
     }
   }
 };
 
 // ================================
-// CONNECTION HEALTH MONITORING
+// VPS CONNECTION HEALTH MONITORING
 // ================================
 
 let lastHealthCheck = Date.now();
-const HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
+const HEALTH_CHECK_INTERVAL = 60000; // 1 minute for VPS
 
-async function performHealthCheck() {
+async function performVPSHealthCheck() {
   try {
     const startTime = Date.now();
     
@@ -327,9 +386,16 @@ async function performHealthCheck() {
     
     lastHealthCheck = Date.now();
     
-    // Log if any instance is slow
-    if (mainRedisTime > 100 || queueRedisTime > 100 || sessionRedisTime > 100) {
-      logger.warn('Redis instances responding slowly', {
+    // Log if any instance is slow (VPS threshold)
+    if (mainRedisTime > 500 || queueRedisTime > 500 || sessionRedisTime > 500) {
+      logger.warn('Redis VPS instances responding slowly', {
+        mainRedis: mainRedisTime + 'ms',
+        queueRedis: queueRedisTime + 'ms',
+        sessionRedis: sessionRedisTime + 'ms',
+        vpsHost: config.get('redis.host')
+      });
+    } else {
+      logger.info('Redis VPS health check passed', {
         mainRedis: mainRedisTime + 'ms',
         queueRedis: queueRedisTime + 'ms',
         sessionRedis: sessionRedisTime + 'ms'
@@ -337,19 +403,21 @@ async function performHealthCheck() {
     }
     
   } catch (error) {
-    logger.error('Redis health check failed', { error: error.message });
+    logger.error('Redis VPS health check failed', { 
+      error: error.message,
+      host: config.get('redis.host')
+    });
   }
 }
 
-// Run health checks
-setInterval(performHealthCheck, HEALTH_CHECK_INTERVAL);
+// Run VPS health checks
+setInterval(performVPSHealthCheck, HEALTH_CHECK_INTERVAL);
 
 // ================================
-// MEMORY MANAGEMENT
+// VPS MEMORY MANAGEMENT
 // ================================
 
-// Monitor Redis memory usage
-async function checkRedisMemory() {
+async function checkRedisVPSMemory() {
   try {
     const memoryInfo = await redis.memory('usage', 'smartcv:*');
     const totalMemory = await redis.info('memory');
@@ -358,36 +426,41 @@ async function checkRedisMemory() {
     const usedMemory = totalMemory.match(/used_memory:(\d+)/);
     const maxMemory = totalMemory.match(/maxmemory:(\d+)/);
     
-    if (usedMemory && maxMemory) {
+    if (usedMemory) {
       const usedMB = Math.round(parseInt(usedMemory[1]) / 1024 / 1024);
-      const maxMB = Math.round(parseInt(maxMemory[1]) / 1024 / 1024);
-      const usagePercent = Math.round((usedMB / maxMB) * 100);
       
-      if (usagePercent > 80) {
-        logger.warn('High Redis memory usage', {
+      logger.info('Redis VPS memory usage', {
+        usedMemory: usedMB + 'MB',
+        host: config.get('redis.host')
+      });
+      
+      // Alert if memory usage is high
+      if (usedMB > 500) { // Alert if using more than 500MB
+        logger.warn('High Redis VPS memory usage', {
           usedMemory: usedMB + 'MB',
-          maxMemory: maxMB + 'MB',
-          usage: usagePercent + '%'
+          host: config.get('redis.host')
         });
       }
     }
     
   } catch (error) {
-    logger.error('Failed to check Redis memory', { error: error.message });
+    logger.error('Failed to check Redis VPS memory', { 
+      error: error.message,
+      host: config.get('redis.host')
+    });
   }
 }
 
-// Check Redis memory every 5 minutes
-setInterval(checkRedisMemory, 300000);
+// Check VPS memory every 10 minutes
+setInterval(checkRedisVPSMemory, 600000);
 
 // ================================
-// AUTOMATIC KEY CLEANUP
+// VPS CLEANUP OPTIMIZATION
 // ================================
 
-// Clean up expired keys and optimize performance
-async function performRedisCleanup() {
+async function performRedisVPSCleanup() {
   try {
-    logger.info('Starting Redis cleanup...');
+    logger.info('Starting Redis VPS cleanup...');
     
     // Clean up old CV processing keys
     const oldCVKeys = await redis.keys('smartcv:raw_cv:*');
@@ -412,23 +485,29 @@ async function performRedisCleanup() {
     }
     
     if (cleanedCount > 0) {
-      logger.info('Redis cleanup completed', { keysUpdated: cleanedCount });
+      logger.info('Redis VPS cleanup completed', { 
+        keysUpdated: cleanedCount,
+        host: config.get('redis.host')
+      });
     }
     
   } catch (error) {
-    logger.error('Redis cleanup failed', { error: error.message });
+    logger.error('Redis VPS cleanup failed', { 
+      error: error.message,
+      host: config.get('redis.host')
+    });
   }
 }
 
-// Run cleanup every 2 hours
-setInterval(performRedisCleanup, 7200000);
+// Run VPS cleanup every 4 hours
+setInterval(performRedisVPSCleanup, 14400000);
 
 // ================================
-// GRACEFUL SHUTDOWN
+// VPS GRACEFUL SHUTDOWN
 // ================================
 
-async function gracefulRedisShutdown() {
-  logger.info('Starting graceful Redis shutdown...');
+async function gracefulRedisVPSShutdown() {
+  logger.info('Starting graceful Redis VPS shutdown...');
   
   try {
     await Promise.all([
@@ -436,41 +515,52 @@ async function gracefulRedisShutdown() {
       queueRedis.quit(),
       sessionRedis.quit()
     ]);
-    logger.info('All Redis connections closed successfully');
+    logger.info('All Redis VPS connections closed successfully');
   } catch (error) {
-    logger.error('Error during Redis shutdown', { error: error.message });
+    logger.error('Error during Redis VPS shutdown', { 
+      error: error.message,
+      host: config.get('redis.host')
+    });
   }
 }
 
 // Handle shutdown signals
-process.on('SIGTERM', gracefulRedisShutdown);
-process.on('SIGINT', gracefulRedisShutdown);
+process.on('SIGTERM', gracefulRedisVPSShutdown);
+process.on('SIGINT', gracefulRedisVPSShutdown);
 
 // ================================
-// CONNECTION POOL STATUS
+// VPS STATUS FUNCTION
 // ================================
 
-function getRedisStatus() {
+function getRedisVPSStatus() {
   return {
     main: {
       status: redis.status,
       db: redisConfig.db,
-      keyPrefix: redisConfig.keyPrefix
+      keyPrefix: redisConfig.keyPrefix,
+      host: config.get('redis.host')
     },
     queue: {
       status: queueRedis.status,
       db: 1,
-      keyPrefix: 'queue:'
+      host: config.get('redis.host')
     },
     session: {
       status: sessionRedis.status,
       db: 2,
-      keyPrefix: 'session:'
+      keyPrefix: 'session:',
+      host: config.get('redis.host')
     },
     lastHealthCheck: new Date(lastHealthCheck).toISOString(),
     performance: {
       totalOperations: redisOperationCount,
-      errorCount: redisErrorCount
+      errorCount: redisErrorCount,
+      slowOperations: slowOperationCount
+    },
+    vpsInfo: {
+      host: config.get('redis.host'),
+      port: config.get('redis.port'),
+      environment: 'VPS Production'
     }
   };
 }
@@ -479,29 +569,25 @@ function getRedisStatus() {
 // EXPORTS
 // ================================
 
-// Export the wrapped Redis instance as default
 module.exports = redisWrapper;
-
-// Export additional instances
-module.exports.redis = redis;           // Raw Redis instance if needed
-module.exports.queueRedis = queueRedis; // For BullMQ queues
-module.exports.sessionRedis = sessionRedis; // For session management
-module.exports.getRedisStatus = getRedisStatus; // Status function
+module.exports.redis = redis;
+module.exports.queueRedis = queueRedis;
+module.exports.sessionRedis = sessionRedis;
+module.exports.getRedisStatus = getRedisVPSStatus;
 
 // ================================
-// STARTUP LOGGING
+// VPS STARTUP LOGGING
 // ================================
 
-logger.info('🚀 Optimized Redis configuration loaded for 1000+ users', {
+logger.info('🚀 Redis VPS configuration loaded for production deployment', {
+  vpsHost: config.get('redis.host'),
+  vpsPort: config.get('redis.port'),
   mainRedis: {
-    host: config.get('redis.host'),
-    port: config.get('redis.port'),
     db: redisConfig.db,
     keyPrefix: redisConfig.keyPrefix
   },
   queueRedis: {
     db: 1,
-    keyPrefix: 'queue:',
     purpose: 'BullMQ job queues'
   },
   sessionRedis: {
@@ -509,11 +595,11 @@ logger.info('🚀 Optimized Redis configuration loaded for 1000+ users', {
     keyPrefix: 'session:',
     purpose: 'User sessions and temp data'
   },
-  optimizations: [
-    'Connection pooling enabled',
-    'Auto-pipelining active',
-    'Memory monitoring configured',
-    'Health checks running',
-    'Performance tracking enabled'
+  vpsOptimizations: [
+    'Increased timeouts for VPS latency',
+    'Enhanced error handling',
+    'VPS-specific monitoring',
+    'Network optimization',
+    'Memory management'
   ]
 });
