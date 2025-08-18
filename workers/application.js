@@ -14,7 +14,7 @@ const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 
 // Email transporter
-const transporter = nodemailer.createTransporter({
+const transporter = nodemailer.createTransport({
   host: config.get('SMTP_HOST'),
   port: Number(config.get('SMTP_PORT')),
   secure: false,
@@ -86,8 +86,7 @@ const applicationWorker = new Worker('job-applications', async (job) => {
     throw error;
   }
 }, { 
-  connection: queueRedis,
-    prefix: "queue:", prefix: "queue:",
+ connection: queueRedis,
   prefix: 'queue:',
   concurrency: 8,
   settings: {

@@ -12,8 +12,7 @@ const RateLimiter = require('../utils/rateLimiter');
 
 // Enhanced queue configuration for better performance
 const openaiQueue = new Queue('openai-tasks', { 
-  connection: queueRedis, prefix: "queue:", prefix: "queue:",
-    prefix: "queue:",
+  connection: queueRedis,
   prefix: 'queue:',
   defaultJobOptions: {
     attempts: 3,
@@ -35,9 +34,9 @@ const openaiQueue = new Queue('openai-tasks', {
 
 // Create QueueEvents with separate connection
 const queueEvents = new QueueEvents('openai-tasks', { 
-  connection: queueRedis, prefix: "queue:", prefix: "queue:",
+  connection: queueRedis,
+  prefix: 'queue:'
 });
-
 queueEvents.on('ready', () => {
   logger.info('QueueEvents ready for openai-tasks');
 });

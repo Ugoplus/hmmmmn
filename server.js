@@ -65,14 +65,18 @@ app.use((req, res, next) => {
 
 // ✅ GLOBAL RATE LIMITING FOR PRODUCTION
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // 1000 requests per 15 minutes per IP
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
   message: {
     error: 'Too many requests from this IP',
     retryAfter: '15 minutes'
   },
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    const ip = req.ip || req.connection.remoteAddress || req.socket.remoteAddress || 'unknown';
+    return ip.replace(/^::ffff:/, '');
+  },
 });
 
 app.use(globalLimiter);
@@ -98,11 +102,10 @@ const webhookLimiter = rateLimit({
     error: 'Webhook rate limit exceeded',
     retryAfter: '1 minute'
   },
-  keyGenerator: (req) => req.ip,
-  skip: (req) => {
-    // Skip rate limiting for health checks
-    return req.path === '/health' || req.path === '/api/health';
-  }
+ keyGenerator: (req) => {
+  const ip = req.ip || req.connection.remoteAddress || req.socket.remoteAddress || 'unknown';
+  return ip.replace(/^::ffff:/, '');
+  },
 });
 
 app.use('/webhook/', webhookLimiter);
@@ -117,7 +120,7 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/public', express.static('public'));
-
+app.use('/admin', express.static('public/admin'));
 // ✅ RESPONSE TIME TRACKING
 app.use((req, res, next) => {
   res.on('finish', () => {

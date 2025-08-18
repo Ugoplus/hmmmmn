@@ -139,10 +139,9 @@ const cvWorker = new Worker('cv-processing', async (job) => {
     throw error;
   }
 }, { 
-  connection: queueRedis,
-    prefix: "queue:", prefix: "queue:",
-  prefix: 'queue:', // ? FIXED: Added prefix for BullMQ compatibility
-  concurrency: OPTIMAL_CONCURRENCY,
+ connection: queueRedis,
+  prefix: 'queue:',
+  concurrency: OPTIMAL_CONCURRENCY, 
   settings: {
     retryProcessDelay: 2000,
     maxStalledCount: 3,
