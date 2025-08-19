@@ -16,18 +16,18 @@ const redisConfig = {
   family: 4
 };
 
-// Main Redis instance
+// Main Redis instance (DB0)
 const redis = new Redis(redisConfig);
 
-// Queue Redis (BullMQ compatible)
+// Queue Redis (BullMQ compatible, DB1)
 const queueRedis = new Redis({
   ...redisConfig,
   db: 1,
-  keyPrefix: '', // Empty prefix for BullMQ
+  keyPrefix: '',
   enableAutoPipelining: false
 });
 
-// Session Redis
+// Session Redis (DB2)
 const sessionRedis = new Redis({
   ...redisConfig,
   db: 2,
@@ -35,36 +35,31 @@ const sessionRedis = new Redis({
 });
 
 // Event handlers
-redis.on('connect', () => {
-  logger.info('Main Redis connected successfully');
-});
+redis.on('connect', () => logger.info('Main Redis connected successfully'));
+redis.on('error', (error) => logger.error('Main Redis error', { error: error.message }));
 
-redis.on('error', (error) => {
-  logger.error('Main Redis error', { error: error.message });
-});
+queueRedis.on('connect', () => logger.info('Queue Redis connected successfully'));
+queueRedis.on('error', (error) => logger.error('Queue Redis error', { error: error.message }));
 
-queueRedis.on('connect', () => {
-  logger.info('Queue Redis connected successfully');
-});
+sessionRedis.on('connect', () => logger.info('Session Redis connected successfully'));
+sessionRedis.on('error', (error) => logger.error('Session Redis error', { error: error.message }));
 
-queueRedis.on('error', (error) => {
-  logger.error('Queue Redis error', { error: error.message });
-});
-
-// Wrapper for safe operations
+// Safe wrapper for simple operations (always DB0)
 const redisWrapper = {
-  async get(key) { return await redis.get(key); },
-  async set(key, value, ...args) { return await redis.set(key, value, ...args); },
-  async del(key) { return await redis.del(key); },
-  async exists(key) { return await redis.exists(key); },
-  async keys(pattern) { return await redis.keys(pattern); },
-  async incr(key) { return await redis.incr(key); },
-  async expire(key, seconds) { return await redis.expire(key, seconds); },
-  async ttl(key) { return await redis.ttl(key); },
-  async ping() { return await redis.ping(); }
+  async get(key) { return redis.get(key); },
+  async set(key, value, ...args) { return redis.set(key, value, ...args); },
+  async del(key) { return redis.del(key); },
+  async exists(key) { return redis.exists(key); },
+  async keys(pattern) { return redis.keys(pattern); },
+  async incr(key) { return redis.incr(key); },
+  async expire(key, seconds) { return redis.expire(key, seconds); },
+  async ttl(key) { return redis.ttl(key); },
+  async ping() { return redis.ping(); }
 };
 
-module.exports = redisWrapper;
-module.exports.redis = redis;
-module.exports.queueRedis = queueRedis;
-module.exports.sessionRedis = sessionRedis;
+module.exports = {
+  redis,         // Main Redis
+  queueRedis,    // For BullMQ queues
+  sessionRedis,  // For session context
+  redisWrapper   // For simple key/value ops
+};
