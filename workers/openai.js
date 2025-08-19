@@ -2,62 +2,39 @@
 require('dotenv').config();
 const { Worker } = require('bullmq');
 const axios = require('axios');
-const redis = require('../config/redis');
 const logger = require('../utils/logger');
+const { redis, queueRedis } = require('../config/redis');
 
 // Helper: Get conversation history for context
 async function getConversationHistory(userId) {
   try {
     const historyKey = `conversation:${userId}`;
-    const historyStr = await redis.get(historyKey);
-    
-    if (!historyStr) {
-      return [];
-    }
-    
-    const history = JSON.parse(historyStr);
-    // Return last 3 exchanges for context
-    return history.slice(-6); // 3 user + 3 bot messages
-    
+    const historyStr = await redis.get(historyKey);   // ✅ Change from mainRedis to redis
+    return historyStr ? JSON.parse(historyStr).slice(-6) : [];
   } catch (error) {
     logger.error('Failed to get conversation history', { userId, error: error.message });
     return [];
   }
 }
 
+
 // Helper: Save conversation turn
 async function saveConversationTurn(userId, userMessage, botResponse) {
   try {
     const historyKey = `conversation:${userId}`;
-    const historyStr = await redis.get(historyKey);
-    
+    const historyStr = await redis.get(historyKey);   // ✅ Change from mainRedis to redis
     let history = historyStr ? JSON.parse(historyStr) : [];
-    
-    // Add new turn
-    history.push({
-      role: 'user',
-      content: userMessage,
-      timestamp: Date.now()
-    });
-    
-    history.push({
-      role: 'assistant', 
-      content: botResponse,
-      timestamp: Date.now()
-    });
-    
-    // Keep only last 10 messages (5 exchanges)
-    if (history.length > 10) {
-      history = history.slice(-10);
-    }
-    
-    // Store for 24 hours
-    await redis.set(historyKey, JSON.stringify(history), 'EX', 86400);
-    
+
+    history.push({ role: 'user', content: userMessage, timestamp: Date.now() });
+    history.push({ role: 'assistant', content: botResponse, timestamp: Date.now() });
+
+    if (history.length > 10) history = history.slice(-10);
+    await redis.set(historyKey, JSON.stringify(history), 'EX', 86400);   // ✅ Change from mainRedis to redis
   } catch (error) {
     logger.error('Failed to save conversation turn', { userId, error: error.message });
   }
 }
+
 
 // Enhanced AI call with conversation context
 async function callTogetherAIWithContext(messages) {
@@ -221,9 +198,8 @@ Remember: Use conversation history to avoid repeating questions!`;
     }
   },
   { 
-    connection: redis,
+    connection: queueRedis,
     prefix: "queue:",
-    prefix: 'queue:',
     concurrency: 2 
   }
 );
@@ -232,15 +208,15 @@ Remember: Use conversation history to avoid repeating questions!`;
 function generateContextAwareFallback(message, conversationHistory) {
   const text = message.toLowerCase().trim();
   
-  // Extract context from recent conversation
+  // Extract context from recent conversation AND from session data
   const recentMessages = conversationHistory.slice(-4).map(m => m.content?.toLowerCase() || '').join(' ');
   
-  // Look for job types in context
+  // Look for job types and locations in full context
   let contextJobType = null;
   let contextLocation = null;
   
   const jobTypes = ['developer', 'marketing', 'sales', 'teacher', 'nurse', 'engineer', 'manager'];
-  const locations = ['lagos', 'abuja', 'kano', 'port harcourt', 'kaduna', 'ibadan'];
+  const locations = ['lagos', 'abuja', 'kano', 'port harcourt', 'kaduna', 'ibadan', 'remote'];
   
   // Check current message and recent context
   const fullContext = `${recentMessages} ${text}`;
@@ -261,39 +237,59 @@ function generateContextAwareFallback(message, conversationHistory) {
   
   // Handle specific patterns with context
   
-  // If they just said a location and we have job type from context
+  // Single location mentioned with job context
   if (locations.includes(text) && contextJobType) {
     return {
       action: 'search_jobs',
-      response: `Perfect! Searching for ${contextJobType} jobs in ${text.charAt(0).toUpperCase() + text.slice(1)}...`,
+      response: `Searching for ${contextJobType} jobs in ${text.charAt(0).toUpperCase() + text.slice(1)}...`,
       filters: {
         title: contextJobType,
-        location: text.charAt(0).toUpperCase() + text.slice(1)
+        location: text.charAt(0).toUpperCase() + text.slice(1),
+        remote: text === 'remote'
       }
     };
   }
   
-  // If they just said a job type and we have location from context  
+  // Single job type mentioned with location context
   if (jobTypes.includes(text) && contextLocation) {
     return {
       action: 'search_jobs', 
-      response: `Got it! Looking for ${text} jobs in ${contextLocation.charAt(0).toUpperCase() + contextLocation.slice(1)}...`,
+      response: `Looking for ${text} jobs in ${contextLocation.charAt(0).toUpperCase() + contextLocation.slice(1)}...`,
       filters: {
         title: text,
-        location: contextLocation.charAt(0).toUpperCase() + contextLocation.slice(1)
+        location: contextLocation.charAt(0).toUpperCase() + contextLocation.slice(1),
+        remote: contextLocation === 'remote'
       }
     };
   }
   
-  // Both job and location in current message
+  // Both job and location detected in current context
   if (contextJobType && contextLocation) {
     return {
       action: 'search_jobs',
       response: `Searching ${contextJobType} jobs in ${contextLocation.charAt(0).toUpperCase() + contextLocation.slice(1)}...`,
       filters: {
         title: contextJobType,
-        location: contextLocation.charAt(0).toUpperCase() + contextLocation.slice(1)
+        location: contextLocation.charAt(0).toUpperCase() + contextLocation.slice(1),
+        remote: contextLocation === 'remote'
       }
+    };
+  }
+  
+  // Handle partial queries that need clarification
+  if (jobTypes.includes(text)) {
+    return {
+      action: 'clarify',
+      response: `What location for ${text} jobs? Lagos, Abuja, or Remote?`,
+      filters: { title: text }
+    };
+  }
+  
+  if (locations.includes(text)) {
+    return {
+      action: 'clarify',
+      response: `What type of jobs in ${text.charAt(0).toUpperCase() + text.slice(1)}? Developer, marketing, or sales?`,
+      filters: { location: text.charAt(0).toUpperCase() + text.slice(1), remote: text === 'remote' }
     };
   }
   
@@ -317,7 +313,6 @@ function generateContextAwareFallback(message, conversationHistory) {
     response: 'I can help you find jobs! What type of work and which city interests you?'
   };
 }
-
 // Your existing helper functions
 function parseJSON(raw, fallback = {}) {
   try {
