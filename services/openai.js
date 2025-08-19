@@ -3,10 +3,9 @@
 
 const { Queue, QueueEvents } = require('bullmq');
 const crypto = require('crypto');
-const redis = require('../config/redis');
+const { redis, queueRedis, sessionRedis } = require('../config/redis');
 const logger = require('../utils/logger');
 // REMOVED: const redis = require('../config/redis'); // This was the duplicate
-const { queueRedis } = require('../config/redis');
 const RateLimiter = require('../utils/rateLimiter');
 
 
@@ -195,112 +194,153 @@ class AIService {
   }
 
   // Enhanced: Handle partial queries with session inference
-  parseSmartPatterns(message, userContext = null) {
-    const text = message.toLowerCase().trim();
-    
-    
-    const sessionData = userContext?.sessionData || {};
-    
-    const singleJobTypes = ['developer', 'engineer', 'marketing', 'sales', 'manager', 'teacher', 'nurse', 'doctor'];
-    
-    if (singleJobTypes.includes(text)) {
-      
-      if (sessionData.lastLocation) {
-        return {
-          action: 'search_jobs',
-          filters: {
-            title: text,
-            location: sessionData.lastLocation
-          }
-        };
-      }
-    }
-    
-    // NEW: Handle partial queries
-    const partialResult = this.matchPartialQuery(text, sessionData);
-    if (partialResult) {
-      return partialResult;
-    }
+// services/openai.js - MODIFICATION TO BETTER USE SESSION CONTEXT
 
-    // Continue with existing logic...
-    const completeSearch = this.matchCompleteJobSearch(text);
-    if (completeSearch) {
+// FIND your existing parseSmartPatterns method and REPLACE it with this enhanced version:
+
+parseSmartPatterns(message, userContext = null) {
+  const text = message.toLowerCase().trim();
+  
+  // Extract session data
+  const sessionData = userContext?.sessionData || {};
+  
+  // Single word job types
+  const singleJobTypes = ['developer', 'engineer', 'marketing', 'sales', 'manager', 'teacher', 'nurse', 'doctor'];
+  
+  // Single word locations
+  const singleLocations = ['lagos', 'abuja', 'kano', 'remote'];
+  
+  // Handle single job type with session location
+  if (singleJobTypes.includes(text) && sessionData.lastLocation) {
+    logger.info('Using session location for job search', { 
+      jobType: text, 
+      location: sessionData.lastLocation 
+    });
+    return {
+      action: 'search_jobs',
+      response: `Perfect! Searching for ${text} jobs in ${sessionData.lastLocation}...`,
+      filters: {
+        title: text,
+        location: sessionData.lastLocation,
+        remote: sessionData.lastLocation.toLowerCase() === 'remote'
+      }
+    };
+  }
+  
+  // Handle single location with session job type
+  if (singleLocations.includes(text) && sessionData.lastJobType) {
+    logger.info('Using session job type for location search', { 
+      location: text, 
+      jobType: sessionData.lastJobType 
+    });
+    return {
+      action: 'search_jobs',
+      response: `Great! Looking for ${sessionData.lastJobType} jobs in ${text.charAt(0).toUpperCase() + text.slice(1)}...`,
+      filters: {
+        title: sessionData.lastJobType,
+        location: text.charAt(0).toUpperCase() + text.slice(1),
+        remote: text === 'remote'
+      }
+    };
+  }
+  
+  // Handle partial queries - NEW ENHANCED LOGIC
+  const partialResult = this.matchPartialQuery(text, sessionData);
+  if (partialResult) {
+    return partialResult;
+  }
+
+  // Continue with existing complete search logic
+  const completeSearch = this.matchCompleteJobSearch(text);
+  if (completeSearch) {
+    return {
+      action: 'search_jobs',
+      filters: completeSearch
+    };
+  }
+
+  // Rest of your existing method remains the same...
+  return null;
+}
+
+// ENHANCE your existing matchPartialQuery method:
+
+matchPartialQuery(text, sessionData) {
+  let detectedJob = null;
+  let detectedLoc = null;
+  let isRemote = false;
+
+  // Detect job type
+  for (const [type, keywords] of Object.entries(this.jobTypes)) {
+    if (keywords.some(keyword => text.includes(keyword))) {
+      detectedJob = type;
+      break;
+    }
+  }
+
+  // Detect location/remote
+  for (const [key, value] of Object.entries(this.locations)) {
+    if (text.includes(key)) {
+      detectedLoc = value;
+      if (key === 'remote') {
+        isRemote = true;
+      }
+      break;
+    }
+  }
+
+  // ENHANCED: Job only → Use session location or ask for clarification
+  if (detectedJob && !detectedLoc) {
+    if (sessionData.lastLocation) {
+      logger.info('Completing job query with session location', { 
+        job: detectedJob, 
+        location: sessionData.lastLocation 
+      });
       return {
         action: 'search_jobs',
-        filters: completeSearch
-      };
-    }
-
-    // Rest of existing method...
-    return null;
-  }
-
-  // NEW: Match partial queries (job only or location only)
-  matchPartialQuery(text, sessionData) {
-    let detectedJob = null;
-    let detectedLoc = null;
-    let isRemote = false;
-
-    // Detect job type
-    for (const [type, keywords] of Object.entries(this.jobTypes)) {
-      if (keywords.some(keyword => text.includes(keyword))) {
-        detectedJob = type;
-        break;
-      }
-    }
-
-    // Detect location/remote
-    for (const [key, value] of Object.entries(this.locations)) {
-      if (text.includes(key)) {
-        detectedLoc = value;
-        if (key === 'remote') {
-          isRemote = true;
+        response: `Searching for ${detectedJob} jobs in ${sessionData.lastLocation}...`,
+        filters: {
+          title: detectedJob,
+          location: sessionData.lastLocation,
+          remote: sessionData.lastLocation.toLowerCase() === 'remote'
         }
-        break;
-      }
-    }
-
-    // Partial: Job only → Infer loc from session or clarify
-    if (detectedJob && !detectedLoc) {
-      if (sessionData.lastLocation) {
-        return {
-          action: 'search_jobs',
-          filters: {
-            title: detectedJob,
-            location: sessionData.lastLocation,
-            remote: sessionData.lastLocation.toLowerCase() === 'remote'
-          }
-        };
-      }
-      return {
-        action: 'clarify',
-        response: `What location for ${detectedJob} jobs? 📍 Lagos, Abuja, or Remote?`,
-        requiresSpecificity: true
       };
     }
-
-    // Partial: Location/remote only → Infer job from session or clarify
-    if (detectedLoc && !detectedJob) {
-      if (sessionData.lastJobType) {
-        return {
-          action: 'search_jobs',
-          filters: {
-            title: sessionData.lastJobType,
-            location: detectedLoc,
-            remote: isRemote
-          }
-        };
-      }
-      return {
-        action: 'clarify',
-        response: `What type of jobs in ${detectedLoc}? Developer, marketing, or sales?`,
-        requiresSpecificity: true
-      };
-    }
-
-    return null;
+    return {
+      action: 'clarify',
+      response: `What location for ${detectedJob} jobs? Lagos, Abuja, or Remote?`,
+      filters: { title: detectedJob }, // Store for next message
+      requiresSpecificity: true
+    };
   }
 
+  // ENHANCED: Location only → Use session job type or ask for clarification
+  if (detectedLoc && !detectedJob) {
+    if (sessionData.lastJobType) {
+      logger.info('Completing location query with session job type', { 
+        location: detectedLoc, 
+        job: sessionData.lastJobType 
+      });
+      return {
+        action: 'search_jobs',
+        response: `Searching for ${sessionData.lastJobType} jobs in ${detectedLoc}...`,
+        filters: {
+          title: sessionData.lastJobType,
+          location: detectedLoc,
+          remote: isRemote
+        }
+      };
+    }
+    return {
+      action: 'clarify',
+      response: `What type of jobs in ${detectedLoc}? Developer, marketing, or sales?`,
+      filters: { location: detectedLoc, remote: isRemote }, // Store for next message
+      requiresSpecificity: true
+    };
+  }
+
+  return null;
+}
   // Existing: Match complete job searches (job + location)
   matchCompleteJobSearch(text) {
     let filters = {};

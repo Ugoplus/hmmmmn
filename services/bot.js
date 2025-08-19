@@ -5,8 +5,8 @@ const openaiService = require('./openai');
 const paystackService = require('./paystack');
 const { Queue } = require('bullmq');
 const { v4: uuidv4 } = require('uuid');
-const redis = require('../config/redis');
-const { queueRedis } = require('../config/redis');
+const { redis, queueRedis, sessionRedis } = require('../config/redis');
+
 const dbManager = require('../config/database');
 const logger = require('../utils/logger');
 const nodemailer = require('nodemailer');
@@ -36,64 +36,74 @@ class CleanTeaseThenPayBot {
   // MAIN MESSAGE HANDLER
   // ================================
   
-  async handleWhatsAppMessage(phone, message, file = null) {
-    try {
-      logger.info('Processing WhatsApp message', { phone, hasMessage: !!message, hasFile: !!file });
+async handleWhatsAppMessage(phone, message, file = null) {
+  try {
+    logger.info('Processing WhatsApp message', { phone, hasMessage: !!message, hasFile: !!file });
+    
+    // GET SESSION CONTEXT - NEW ADDITION
+    const sessionContext = await getSessionContext(phone);
+    
+    // Handle file uploads with payment protection + instant response
+    if (file) {
+      const uploadLimit = await RateLimiter.checkLimit(phone, 'cv_upload');
+      if (!uploadLimit.allowed) {
+        return this.sendWhatsAppMessage(phone, uploadLimit.message);
+      }
       
-      // Handle file uploads with payment protection + instant response
-      if (file) {
-        const uploadLimit = await RateLimiter.checkLimit(phone, 'cv_upload');
-        if (!uploadLimit.allowed) {
-          return this.sendWhatsAppMessage(phone, uploadLimit.message);
-        }
-        
-        return await this.handleInstantFileUpload(phone, file);
-      }
+      return await this.handleInstantFileUpload(phone, file);
+    }
 
-      // Handle text messages
-      if (!message || typeof message !== 'string') {
-        return this.sendWhatsAppMessage(phone, 
-          'Hi! I help you find jobs in Nigeria ????\n\nTry:\nï "Find developer jobs in Lagos"\nï "Status" - Check your usage\nï Upload your CV to apply!'
-        );
-      }
-
-      // Check user state
-      const state = await redis.get(`state:${phone}`);
-      
-      if (state === 'selecting_jobs') {
-        return await this.handleJobSelection(phone, message);
-      }
-
-      // Enhanced status command
-      if (message.toLowerCase().includes('status')) {
-        return await this.handleStatusRequest(phone);
-      }
-
-      // Check if user wants to see jobs after payment
-      if (message.toLowerCase().includes('show jobs') || message.toLowerCase().includes('my jobs')) {
-        return await this.showFullJobsAfterPayment(phone);
-      }
-
-      // AI processing with rate limiting
-      const aiLimit = await RateLimiter.checkLimit(phone, 'ai_call');
-      if (!aiLimit.allowed) {
-        const simpleResponse = this.handleSimplePatterns(phone, message);
-        if (simpleResponse) {
-          return simpleResponse;
-        }
-        return this.sendWhatsAppMessage(phone, aiLimit.message);
-      }
-
-      return await this.handleWithAI(phone, message);
-
-    } catch (error) {
-      logger.error('WhatsApp message processing error', { phone, error: error.message });
+    // Handle text messages
+    if (!message || typeof message !== 'string') {
       return this.sendWhatsAppMessage(phone, 
-        '? Something went wrong. Please try again.'
+        'Hi! I help you find jobs in Nigeria üá≥üá¨\n\nTry:\n‚Ä¢ "Find developer jobs in Lagos"\n‚Ä¢ "Status" - Check your usage\n‚Ä¢ Upload your CV to apply!'
       );
     }
-  }
 
+    // Check user state
+    const state = await redis.get(`state:${phone}`);
+    
+    if (state === 'selecting_jobs') {
+      return await this.handleJobSelection(phone, message);
+    }
+
+    // Enhanced status command
+    if (message.toLowerCase().includes('status')) {
+      return await this.handleStatusRequest(phone);
+    }
+
+    // Check if user wants to see jobs after payment
+    if (message.toLowerCase().includes('show jobs') || message.toLowerCase().includes('my jobs')) {
+      return await this.showFullJobsAfterPayment(phone);
+    }
+
+    // Handle clear/reset commands - NEW ADDITION
+    if (message.toLowerCase().includes('clear') || message.toLowerCase().includes('reset')) {
+      await clearSessionContext(phone);
+      return this.sendWhatsAppMessage(phone, 
+        '‚úÖ Conversation cleared! Ready to start fresh.\n\nTry: "Find developer jobs in Lagos"'
+      );
+    }
+
+    // AI processing with rate limiting
+    const aiLimit = await RateLimiter.checkLimit(phone, 'ai_call');
+    if (!aiLimit.allowed) {
+      const simpleResponse = this.handleSimplePatterns(phone, message, sessionContext); // PASS sessionContext
+      if (simpleResponse) {
+        return simpleResponse;
+      }
+      return this.sendWhatsAppMessage(phone, aiLimit.message);
+    }
+
+    return await this.handleWithAI(phone, message, sessionContext); // PASS sessionContext
+
+  } catch (error) {
+    logger.error('WhatsApp message processing error', { phone, error: error.message });
+    return this.sendWhatsAppMessage(phone, 
+      '‚ö†Ô∏è Something went wrong. Please try again.'
+    );
+  }
+}
   // ================================
   // CLEAN TEASE-THEN-PAY JOB SEARCH
   // ================================
@@ -127,7 +137,7 @@ class CleanTeaseThenPayBot {
 
       if (rows.length === 0) {
         return this.sendWhatsAppMessage(identifier, 
-          `?? No jobs found for "${title || 'jobs'}" in ${location || 'that location'}\n\n?? Try:\nï "jobs in Lagos"\nï "developer jobs"\nï "remote jobs"`
+          `?? No jobs found for "${title || 'jobs'}" in ${location || 'that location'}\n\n?? Try:\nÔøΩ "jobs in Lagos"\nÔøΩ "developer jobs"\nÔøΩ "remote jobs"`
         );
       }
 
@@ -155,7 +165,7 @@ class CleanTeaseThenPayBot {
       
       response += `?? **Available Locations:**\n`;
       Object.entries(locationGroups).forEach(([location, count]) => {
-        response += `ï ${location}: ${count} job${count > 1 ? 's' : ''}\n`;
+        response += `ÔøΩ ${location}: ${count} job${count > 1 ? 's' : ''}\n`;
       });
 
       response += `\n?? **Pay ?300 to see full details and apply**\n\n`;
@@ -189,7 +199,7 @@ class CleanTeaseThenPayBot {
       const pendingJobsStr = await redis.get(`pending_jobs:${identifier}`);
       if (!pendingJobsStr) {
         return this.sendWhatsAppMessage(identifier,
-          '?? No jobs found. Search for jobs first:\nï "Find developer jobs in Lagos"\nï "Remote marketing jobs"'
+          '?? No jobs found. Search for jobs first:\nÔøΩ "Find developer jobs in Lagos"\nÔøΩ "Remote marketing jobs"'
         );
       }
 
@@ -210,8 +220,8 @@ class CleanTeaseThenPayBot {
       });
 
       response += `**?? Ready to Apply:**\n`;
-      response += `ï "Apply to jobs 1,3,5" (select specific jobs)\n`;
-      response += `ï "Apply to all jobs" (apply to all ${jobs.length})\n\n`;
+      response += `ÔøΩ "Apply to jobs 1,3,5" (select specific jobs)\n`;
+      response += `ÔøΩ "Apply to all jobs" (apply to all ${jobs.length})\n\n`;
       response += `**Next:** Select jobs, then upload your CV!`;
 
       // Store for selection
@@ -314,7 +324,7 @@ class CleanTeaseThenPayBot {
 
       if (selectedJobs.length === 0) {
         return this.sendWhatsAppMessage(phone,
-          'Please specify which jobs to apply to:\nï "Apply to jobs 1,3,5"\nï "Apply to all jobs"'
+          'Please specify which jobs to apply to:\nÔøΩ "Apply to jobs 1,3,5"\nÔøΩ "Apply to all jobs"'
         );
       }
 
@@ -357,7 +367,7 @@ class CleanTeaseThenPayBot {
       
       if (!selectedJobs) {
         return this.sendWhatsAppMessage(phone,
-          '?? **First select jobs to apply to!**\n\nSearch for jobs:\nï "Find developer jobs in Lagos"\nï Select jobs to apply to\nï Then upload CV for applications!'
+          '?? **First select jobs to apply to!**\n\nSearch for jobs:\nÔøΩ "Find developer jobs in Lagos"\nÔøΩ Select jobs to apply to\nÔøΩ Then upload CV for applications!'
         );
       }
 
@@ -428,7 +438,7 @@ class CleanTeaseThenPayBot {
     }
 
     await this.sendWhatsAppMessage(phone,
-      `?? **SUCCESS! Applications Submitted!**\n\n?? **Applied to ${jobs.length} jobs:**\n${jobList}\n?? **Recruiters have received your applications**\n\n?? **Today's Usage:**\nï Applications used: ${usage.totalToday + jobs.length}/10\nï Remaining: ${Math.max(0, usage.remaining - jobs.length)}/10\n\n?? **Join our success community & share your win:**\nhttps://whatsapp.com/channel/0029VbAp71RA89Mc5GPDKl1h\n\n?? **Continue searching for more opportunities!**`
+      `?? **SUCCESS! Applications Submitted!**\n\n?? **Applied to ${jobs.length} jobs:**\n${jobList}\n?? **Recruiters have received your applications**\n\n?? **Today's Usage:**\nÔøΩ Applications used: ${usage.totalToday + jobs.length}/10\nÔøΩ Remaining: ${Math.max(0, usage.remaining - jobs.length)}/10\n\n?? **Join our success community & share your win:**\nhttps://whatsapp.com/channel/0029VbAp71RA89Mc5GPDKl1h\n\n?? **Continue searching for more opportunities!**`
     );
   }
 
@@ -478,101 +488,183 @@ class CleanTeaseThenPayBot {
   // AI PROCESSING & PATTERNS
   // ================================
   
-  async handleWithAI(phone, message) {
-    try {
-      const intent = await openaiService.parseJobQuery(message, phone, {
-        platform: 'whatsapp',
-        timestamp: Date.now()
-      });
+ async handleWithAI(phone, message, sessionContext = {}) {
+  try {
+    const intent = await openaiService.parseJobQuery(message, phone, {
+      platform: 'whatsapp',
+      timestamp: Date.now(),
+      sessionData: sessionContext // PASS sessionContext to AI
+    });
 
-      return await this.processIntent(phone, intent, message);
+    const result = await this.processIntent(phone, intent, message, sessionContext);
+    
+    // UPDATE SESSION CONTEXT AFTER PROCESSING - NEW ADDITION
+    await this.updateSessionContext(phone, message, intent, sessionContext);
+    
+    return result;
 
-    } catch (error) {
-      logger.error('AI processing error', { phone, error: error.message });
-      return this.handleSimplePatterns(phone, message);
-    }
+  } catch (error) {
+    logger.error('AI processing error', { phone, error: error.message });
+    return this.handleSimplePatterns(phone, message, sessionContext);
   }
+}
+async updateSessionContext(phone, message, intent, currentContext) {
+  try {
+    const updatedContext = { ...currentContext };
+    
+    // Save job type if detected
+    if (intent?.filters?.title) {
+      updatedContext.lastJobType = intent.filters.title;
+      logger.debug('Updated session job type', { phone, jobType: intent.filters.title });
+    }
+    
+    // Save location if detected  
+    if (intent?.filters?.location) {
+      updatedContext.lastLocation = intent.filters.location;
+      logger.debug('Updated session location', { phone, location: intent.filters.location });
+    }
+    
+    // Save last message and action for context
+    updatedContext.lastMessage = message;
+    updatedContext.lastAction = intent?.action || 'unknown';
+    updatedContext.timestamp = Date.now();
+    
+    // Save interaction count
+    updatedContext.interactionCount = (updatedContext.interactionCount || 0) + 1;
+    
+    await saveSessionContext(phone, updatedContext);
+    
+  } catch (error) {
+    logger.error('Failed to update session context', { phone, error: error.message });
+  }
+}
 
-  async processIntent(phone, intent, originalMessage) {
-    try {
-      switch (intent?.action) {
-        case 'search_jobs':
-          if (intent.filters && (intent.filters.title || intent.filters.location || intent.filters.remote)) {
-            await this.sendWhatsAppMessage(phone, intent.response || '?? Searching for jobs...');
-            return await this.searchJobs(phone, intent.filters);
+async processIntent(phone, intent, originalMessage, sessionContext = {}) {
+  try {
+    switch (intent?.action) {
+      case 'search_jobs':
+        if (intent.filters && (intent.filters.title || intent.filters.location || intent.filters.remote)) {
+          // Use session context to complete partial queries - NEW LOGIC
+          const filters = { ...intent.filters };
+          
+          if (!filters.title && sessionContext.lastJobType) {
+            filters.title = sessionContext.lastJobType;
+            logger.info('Completed query with session job type', { phone, jobType: filters.title });
           }
-          return this.sendWhatsAppMessage(phone, 
-            'What type of jobs are you looking for? ??\n\nTry: "developer jobs in Lagos" or "remote marketing jobs"'
-          );
+          
+          if (!filters.location && sessionContext.lastLocation) {
+            filters.location = sessionContext.lastLocation;
+            logger.info('Completed query with session location', { phone, location: filters.location });
+          }
 
-        case 'apply_job':
-          await redis.set(`state:${phone}`, 'selecting_jobs', 'EX', 3600);
-          return await this.handleJobSelection(phone, originalMessage);
+          // Save/Update context on full search - EXISTING LOGIC ENHANCED
+          if (filters.title) {
+            await redis.set(`lastJobType:${phone}`, filters.title, 'EX', 60);
+          }
+          if (filters.location) {
+            await redis.set(`lastLocation:${phone}`, filters.location, 'EX', 60);
+          }
 
-        case 'status':
-          return await this.handleStatusRequest(phone);
+          await this.sendWhatsAppMessage(phone, intent.response || 'üîé Searching for jobs...');
+          return await this.searchJobs(phone, filters);
+        }
+        return this.sendWhatsAppMessage(phone, 
+          'What type of jobs are you looking for? ü§î\n\nTry: "developer jobs in Lagos" or "remote marketing jobs"'
+        );
 
-        case 'help':
-          return this.sendWhatsAppMessage(phone, this.getHelpMessage());
+      case 'clarify':
+        // Store/update partial context so next reply merges properly - EXISTING LOGIC
+        if (intent.filters?.title) {
+          await redis.set(`lastJobType:${phone}`, intent.filters.title, 'EX', 3600);
+        }
+        if (intent.filters?.location) {
+          await redis.set(`lastLocation:${phone}`, intent.filters.location, 'EX', 3600);
+        }
 
-        default:
-          return this.sendWhatsAppMessage(phone, 
-            intent.response || 'I help you find jobs in Nigeria! ????\n\nTry: "Find developer jobs in Lagos"'
-          );
-      }
-    } catch (error) {
-      logger.error('Intent processing error', { phone, error: error.message });
-      return this.sendWhatsAppMessage(phone, 
-        '? Something went wrong. Please try again.'
-      );
+        return this.sendWhatsAppMessage(phone, intent.response);
+
+      case 'apply_job':
+        await redis.set(`state:${phone}`, 'selecting_jobs', 'EX', 3600);
+        return await this.handleJobSelection(phone, originalMessage);
+
+      case 'status':
+        return await this.handleStatusRequest(phone);
+
+      case 'help':
+        return this.sendWhatsAppMessage(phone, this.getHelpMessage());
+
+      default:
+        return this.sendWhatsAppMessage(phone, 
+          intent.response || 'I help you find jobs in Nigeria! üá≥üá¨\n\nTry: "Find developer jobs in Lagos"'
+        );
     }
+  } catch (error) {
+    logger.error('Intent processing error', { phone, error: error.message });
+    return this.sendWhatsAppMessage(phone, 
+      '‚ö†Ô∏è Something went wrong. Please try again.'
+    );
+  }
+}
+
+handleSimplePatterns(phone, message, sessionContext = {}) {
+  const text = message.toLowerCase().trim();
+  
+  if (text.includes('hello') || text.includes('hi')) {
+    // Use session context to personalize greeting
+    const greeting = sessionContext.lastJobType || sessionContext.lastLocation 
+      ? `Hello again! Still looking for ${sessionContext.lastJobType || 'jobs'} ${sessionContext.lastLocation ? 'in ' + sessionContext.lastLocation : ''}?`
+      : 'Hello! I help you find jobs in Nigeria üá≥üá¨\n\nTry: "Find developer jobs in Lagos"';
+    
+    this.sendWhatsAppMessage(phone, greeting);
+    return true;
+  }
+  
+  if (text.includes('help')) {
+    this.sendWhatsAppMessage(phone, this.getHelpMessage());
+    return true;
+  }
+  
+  if (text.includes('status')) {
+    this.handleStatusRequest(phone);
+    return true;
   }
 
-  handleSimplePatterns(phone, message) {
-    const text = message.toLowerCase().trim();
-    
-    if (text.includes('hello') || text.includes('hi')) {
-      this.sendWhatsAppMessage(phone, 
-        'Hello! I help you find jobs in Nigeria ????\n\nTry: "Find developer jobs in Lagos"'
-      );
-      return true;
-    }
-    
-    if (text.includes('help')) {
-      this.sendWhatsAppMessage(phone, this.getHelpMessage());
-      return true;
-    }
-    
-    if (text.includes('status')) {
-      this.handleStatusRequest(phone);
-      return true;
-    }
-
-    const jobTypes = ['developer', 'engineer', 'marketing', 'sales', 'teacher', 'nurse', 'doctor'];
-    const locations = ['lagos', 'abuja', 'remote'];
-    
-    let foundJob = null;
-    let foundLocation = null;
-    
-    for (const job of jobTypes) {
-      if (text.includes(job)) foundJob = job;
-    }
-    
-    for (const loc of locations) {
-      if (text.includes(loc)) foundLocation = loc;
-    }
-    
-    if (foundJob && foundLocation) {
-      this.searchJobs(phone, { 
-        title: foundJob, 
-        location: foundLocation.charAt(0).toUpperCase() + foundLocation.slice(1),
-        remote: foundLocation === 'remote'
-      });
-      return true;
-    }
-    
-    return false;
+  const jobTypes = ['developer', 'engineer', 'marketing', 'sales', 'teacher', 'nurse', 'doctor'];
+  const locations = ['lagos', 'abuja', 'remote'];
+  
+  let foundJob = null;
+  let foundLocation = null;
+  
+  for (const job of jobTypes) {
+    if (text.includes(job)) foundJob = job;
   }
+  
+  for (const loc of locations) {
+    if (text.includes(loc)) foundLocation = loc;
+  }
+  
+  // USE SESSION CONTEXT FOR PARTIAL QUERIES - NEW LOGIC
+  if (foundJob && !foundLocation && sessionContext.lastLocation) {
+    foundLocation = sessionContext.lastLocation.toLowerCase();
+    logger.info('Using session location', { phone, location: foundLocation });
+  }
+  
+  if (!foundJob && foundLocation && sessionContext.lastJobType) {
+    foundJob = sessionContext.lastJobType.toLowerCase();
+    logger.info('Using session job type', { phone, jobType: foundJob });
+  }
+  
+  if (foundJob && foundLocation) {
+    this.searchJobs(phone, { 
+      title: foundJob, 
+      location: foundLocation.charAt(0).toUpperCase() + foundLocation.slice(1),
+      remote: foundLocation === 'remote'
+    });
+    return true;
+  }
+  
+  return false;
+}
 
   // ================================
   // UTILITY METHODS
@@ -602,9 +694,9 @@ class CleanTeaseThenPayBot {
     return `???? **SmartCVNaija - Job Application Bot**
 
 ?? **Find Jobs:**
-ï "Find developer jobs in Lagos"
-ï "Remote marketing jobs"
-ï "Jobs in Abuja"
+ÔøΩ "Find developer jobs in Lagos"
+ÔøΩ "Remote marketing jobs"
+ÔøΩ "Jobs in Abuja"
 
 ?? **How it works:**
 1. Search for jobs (free preview)
@@ -613,8 +705,8 @@ class CleanTeaseThenPayBot {
 4. Upload CV for instant applications
 
 ?? **Apply to Jobs:**
-ï Select jobs: "Apply to jobs 1,3,5"
-ï Apply to all: "Apply to all jobs"
+ÔøΩ Select jobs: "Apply to jobs 1,3,5"
+ÔøΩ Apply to all: "Apply to all jobs"
 
 ?? **Check Status:** Type "status"
 
@@ -649,9 +741,9 @@ class CleanTeaseThenPayBot {
       `?? **Your Status**
 
 ?? **Today's Usage:**
-ï Applications used: ${usage.totalToday}/10
-ï Remaining: ${usage.remaining}/10
-ï Payment: ${usage.needsPayment ? '? Required' : '? Active'}${statusText}
+ÔøΩ Applications used: ${usage.totalToday}/10
+ÔøΩ Remaining: ${usage.remaining}/10
+ÔøΩ Payment: ${usage.needsPayment ? '? Required' : '? Active'}${statusText}
 
 ?? **Next Steps:**
 ${usage.needsPayment ? '1. Search for jobs\n2. Pay ?300 to see details\n3. Apply with CV' : selectedJobs ? '1. Upload CV for instant applications!' : pendingJobs ? '1. Pay ?300 to see job details\n2. Select and apply' : '1. Search for jobs\n2. Pay to see details\n3. Apply with CV'}
