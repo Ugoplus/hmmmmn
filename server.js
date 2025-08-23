@@ -16,7 +16,7 @@ const openaiWorker = require('./workers/openai');
 const cvWorker = require('./workers/cv');
 const cvBackgroundWorker = require('./workers/cv-background'); // ✅ NEW
 const applicationWorker = require('./workers/application');
-const redis = require('./config/redis');
+const { redis, redisWrapper } = require('./config/redis');
 const dbManager = require('./config/database');
 const cvCleanup = require('./services/cv-cleanup');
 const jobCleanup = require('./services/job-cleanup');
@@ -154,7 +154,7 @@ app.get('/health', async (req, res) => {
   try {
     const checks = await Promise.allSettled([
       dbManager.healthCheck(),
-      redis.ping(),
+      redisWrapper.ping(),
       checkSystemHealth()
     ]);
     
@@ -480,6 +480,7 @@ app.post('/webhook/ycloud', async (req, res) => {
     }
 
     const userPhone = whatsappInboundMessage.from;
+    const messageId = whatsappInboundMessage.id; // ✅ Extract message ID for typing
     
     // ✅ USER MESSAGE RATE LIMITING
     const messageLimit = await RateLimiter.checkLimit(userPhone, 'message');
@@ -490,7 +491,11 @@ app.post('/webhook/ycloud', async (req, res) => {
         remaining: messageLimit.remaining
       });
       
-      await ycloud.sendTextMessage(userPhone, messageLimit.message);
+      // Use smart messaging with typing indicator
+      await ycloud.sendSmartMessage(userPhone, messageLimit.message, {
+        inboundMessageId: messageId,
+        messageType: 'instant_response'
+      });
       return;
     }
 
@@ -501,124 +506,7 @@ app.post('/webhook/ycloud', async (req, res) => {
   }
 });
 
-// ✅ ENHANCED YCLOUD MESSAGE PROCESSING
-async function processYCloudMessage(message, logger) {
-  try {
-    const { from, type, id: messageId } = message;
-    
-    // Duplicate detection
-    const duplicateKey = `msg:${messageId}`;
-    const exists = await redis.exists(duplicateKey);
-    if (exists) {
-      logger.info('Duplicate YCloud message ignored', { messageId });
-      return;
-    }
-    
-    await redis.set(duplicateKey, '1', 'EX', 3600);
-
-    logger.info('Processing YCloud message', { type, from, messageId });
-
-    switch (type) {
-      case 'text':
-        const messageText = message.text?.body;
-        if (messageText) {
-          await bot.handleWhatsAppMessage(from, messageText);
-        }
-        break;
-        
-      case 'document':
-        await handleYCloudDocumentMessage(message, logger);
-        break;
-        
-      case 'image':
-        await ycloud.sendTextMessage(from, 
-          '📄 Please send your CV as a document (PDF/DOCX), not an image.'
-        );
-        break;
-        
-      default:
-        await ycloud.sendTextMessage(from,
-          'Hi! I help you find jobs in Nigeria. Send me a message or upload your CV.'
-        );
-    }
-
-  } catch (error) {
-    logger.error('YCloud message processing error', {
-      messageId: message.id,
-      error: error.message
-    });
-    
-    try {
-      await ycloud.sendTextMessage(message.from, 
-        '❌ Sorry, something went wrong. Please try again.'
-      );
-    } catch (sendError) {
-      logger.error('Failed to send error message', { sendError: sendError.message });
-    }
-  }
-}
-
-// ✅ DOCUMENT MESSAGE HANDLER
-async function handleYCloudDocumentMessage(message, logger) {
-  const { from, document } = message;
-  
-  try {
-    if (!document) {
-      await ycloud.sendTextMessage(from, '❌ No document found in message.');
-      return;
-    }
-
-    // Validate file type
-    const allowedTypes = [
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/msword'
-    ];
-    
-    if (!allowedTypes.includes(document.mime_type)) {
-      await ycloud.sendTextMessage(from,
-        `❌ Unsupported file type: ${document.mime_type}\n\n✅ Please send:\n• PDF files (.pdf)\n• Word documents (.docx)`
-      );
-      return;
-    }
-
-    await ycloud.sendTextMessage(from, '⏳ Downloading your CV...');
-
-    // Download document
-    const downloadResult = await ycloud.downloadDocument(document);
-    
-    // Validate downloaded file
-    ycloud.validateDocument(document, downloadResult.buffer);
-
-    logger.info('YCloud document downloaded successfully', {
-      from,
-      filename: downloadResult.filename,
-      size: downloadResult.size,
-      method: downloadResult.method
-    });
-
-    // Send to bot
-    await bot.handleWhatsAppMessage(from, null, {
-      buffer: downloadResult.buffer,
-      originalname: downloadResult.filename || 'document.pdf',
-      mimetype: downloadResult.mimeType || document.mime_type,
-      email: null,
-      phone: from
-    });
-
-  } catch (error) {
-    logger.error('YCloud document processing error', {
-      from,
-      error: error.message
-    });
-
-    await ycloud.sendTextMessage(from,
-      '❌ Failed to process document. Please try again.'
-    );
-  }
-}
-
-// ✅ PAYSTACK WEBHOOK
+// Add this BEFORE your error handling middleware
 app.post('/webhook/paystack', (req, res) => {
   try {
     const hash = crypto
@@ -654,6 +542,165 @@ app.post('/webhook/paystack', (req, res) => {
   }
 });
 
+
+// ✅ ENHANCED YCLOUD MESSAGE PROCESSING
+async function processYCloudMessage(message, logger) {
+  try {
+    const { from, type, id: messageId } = message;
+    
+    // Duplicate detection
+    const duplicateKey = `msg:${messageId}`;
+    const exists = await redis.exists(duplicateKey);
+    if (exists) {
+      logger.info('Duplicate YCloud message ignored', { messageId });
+      return;
+    }
+    
+    await redis.set(duplicateKey, '1', 'EX', 3600);
+
+    logger.info('Processing YCloud message', { type, from, messageId });
+
+    switch (type) {
+      case 'text':
+        const messageText = message.text?.body;
+        if (messageText) {
+          // ✅ Pass messageId for typing indicator
+          await bot.handleWhatsAppMessage(from, messageText, null, messageId);
+        }
+        break;
+        
+      case 'document':
+        await handleYCloudDocumentMessage(message, logger);
+        break;
+        
+      case 'image':
+        // ✅ Use smart messaging with typing
+        await ycloud.sendSmartMessage(from, 
+          '📄 Please send your CV as a document (PDF/DOCX), not an image.',
+          {
+            inboundMessageId: messageId,
+            messageType: 'instant_response'
+          }
+        );
+        break;
+        
+      case 'video':
+      case 'audio':
+        // ✅ Handle unsupported media with typing
+        await ycloud.sendSmartMessage(from,
+          '📄 I can only process PDF and DOCX files for job applications. Please upload your CV as a document.',
+          {
+            inboundMessageId: messageId,
+            messageType: 'instant_response'
+          }
+        );
+        break;
+        
+      default:
+        // ✅ Default response with typing
+        await ycloud.sendSmartMessage(from,
+          'Hi! I help you find jobs in Nigeria. Send me a message or upload your CV.',
+          {
+            inboundMessageId: messageId,
+            messageType: 'instant_response'
+          }
+        );
+    }
+
+  } catch (error) {
+    logger.error('YCloud message processing error', {
+      messageId: message.id,
+      error: error.message
+    });
+    
+    try {
+      // ✅ Error message with typing
+      await ycloud.sendSmartMessage(message.from, 
+        '⚠️ Sorry, something went wrong. Please try again.',
+        {
+          inboundMessageId: message.id,
+          messageType: 'instant_response'
+        }
+      );
+    } catch (sendError) {
+      logger.error('Failed to send error message', { sendError: sendError.message });
+    }
+  }
+}
+// ✅ DOCUMENT MESSAGE HANDLER
+async function handleYCloudDocumentMessage(message, logger) {
+  const { from, document, id: messageId } = message;
+  
+  try {
+    if (!document) {
+      await ycloud.sendSmartMessage(from, '⚠️ No document found in message.', {
+        inboundMessageId: messageId,
+        messageType: 'instant_response'
+      });
+      return;
+    }
+
+    // Validate file type
+    const allowedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword'
+    ];
+    
+    if (!allowedTypes.includes(document.mime_type)) {
+      await ycloud.sendSmartMessage(from,
+        `⚠️ Unsupported file type: ${document.mime_type}\n\n✅ Please send:\n• PDF files (.pdf)\n• Word documents (.docx)`,
+        {
+          inboundMessageId: messageId,
+          messageType: 'instant_response'
+        }
+      );
+      return;
+    }
+
+    // Show processing typing while downloading
+    await ycloud.sendSmartMessage(from, '⏳ Downloading your CV...', {
+      inboundMessageId: messageId,
+      messageType: 'processing'
+    });
+
+    // Download document
+    const downloadResult = await ycloud.downloadDocument(document);
+    
+    // Validate downloaded file
+    ycloud.validateDocument(document, downloadResult.buffer);
+
+    logger.info('YCloud document downloaded successfully', {
+      from,
+      filename: downloadResult.filename,
+      size: downloadResult.size,
+      method: downloadResult.method
+    });
+
+    // ✅ Send to bot with messageId for typing indicators
+    await bot.handleWhatsAppMessage(from, null, {
+      buffer: downloadResult.buffer,
+      originalname: downloadResult.filename || 'document.pdf',
+      mimetype: downloadResult.mimeType || document.mime_type,
+      email: null,
+      phone: from
+    }, messageId);
+
+  } catch (error) {
+    logger.error('YCloud document processing error', {
+      from,
+      error: error.message
+    });
+
+    await ycloud.sendSmartMessage(from,
+      '⚠️ Failed to process document. Please try again.',
+      {
+        inboundMessageId: messageId,
+        messageType: 'instant_response'
+      }
+    );
+  }
+}
 // ================================
 // PAYMENT SUCCESS PAGE
 // ================================

@@ -266,7 +266,7 @@ parseSmartPatterns(message, userContext = null) {
       response: 'I can help you find jobs! Which city interests you? Lagos, Abuja, or Remote?'
     };
   }
-   logger.info('Pattern matching debug', { text, hasHello: text.includes('hello'), hasHi: text.includes('hi') });
+  
   if (text.includes('hello') || text.includes('hi')) {
     return {
       action: 'greeting',

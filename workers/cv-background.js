@@ -1,8 +1,7 @@
 // workers/cv-background.js - BACKGROUND CV PROCESSING (NON-BLOCKING)
 
 const { Worker } = require('bullmq');
-const { queueRedis } = require('../config/redis');
-const redis = require('../config/redis');
+const { redis, queueRedis } = require('../config/redis');
 const logger = require('../utils/logger');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');

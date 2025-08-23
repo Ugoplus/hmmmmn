@@ -133,27 +133,38 @@ Remember: Use conversation history to avoid repeating questions!`;
         // Add current message
         conversationMessages.push({ role: 'user', content: message });
 
-        let result = null;
+     // STEP 1: Try local parsing first (instant)
+let result = null;
 
-        // Try AI processing with context
-        if (process.env.TOGETHER_API_KEY) {
-          try {
-            const aiResponse = await callTogetherAIWithContext(conversationMessages);
-            const parsedResult = parseJSON(aiResponse, null);
-            
-            if (parsedResult && parsedResult.action) {
-              result = parsedResult;
-              
-              // Save this conversation turn
-              await saveConversationTurn(userId, message, result.response || 'Processing...');
-              
-            } else {
-              logger.warn('AI returned invalid JSON structure');
-            }
-          } catch (aiError) {
-            logger.error('AI processing failed, using fallback', { error: aiError.message });
-          }
-        }
+// Quick commands
+const simple = this.parseSimpleCommand ? this.parseSimpleCommand(message) : parseSimpleCommand(message);
+if (simple) {
+  result = simple;
+} else {
+  // Pattern-based parsing
+  const pattern = this.parseSmartPatterns ? this.parseSmartPatterns(message, { sessionData: conversationHistory }) : parseSmartPatterns(message, { sessionData: conversationHistory });
+  if (pattern) result = pattern;
+}
+
+// STEP 2: Only call AI if local methods failed
+if (!result && process.env.TOGETHER_API_KEY) {
+  try {
+    const aiResponse = await callTogetherAIWithContext(conversationMessages);
+    const parsedResult = parseJSON(aiResponse, null);
+    if (parsedResult && parsedResult.action) {
+      result = parsedResult;
+      await saveConversationTurn(userId, message, result.response || 'Processing...');
+    }
+  } catch (aiError) {
+    logger.error('AI call failed', { error: aiError.message });
+  }
+}
+
+// STEP 3: Fallback if still nothing
+if (!result) {
+  result = generateContextAwareFallback(message, conversationHistory);
+  await saveConversationTurn(userId, message, result.response);
+}
 
         // Fallback if AI fails
         if (!result) {
@@ -354,6 +365,81 @@ Thank you for your consideration.
 
 Best regards,
 [Your Name]`;
+}
+function parseSimpleCommand(message) {
+  const text = message.toLowerCase().trim();
+
+  const commands = {
+    'reset': { action: 'reset', response: 'Session cleared! Let’s start afresh.' },
+    'status': { action: 'status', response: 'Checking your application status...' },
+    'help': { 
+      action: 'help', 
+      response: 'I help Nigerians search and apply for jobs.\nExample: "Find accounting jobs in Abuja"'
+    }
+  };
+
+  if (commands[text]) return commands[text];
+
+  // Nigerian greetings
+  if (text.match(/^(hello|hi|hey|good morning|good afternoon|good evening)$/)) {
+    return {
+      action: 'greeting',
+      response: 'Hello! I’m SmartCV Naija. I can help you search and apply for jobs in Nigeria.\nTry: "Find engineering jobs in Lagos"'
+    };
+  }
+
+  // Confirmation messages (follow-up intent)
+  if (text.match(/^(yes|ok|sure|alright)$/)) {
+    return {
+      action: 'confirm',
+      response: 'Great! Please upload your CV (PDF, max 5MB) and I’ll continue with the application.'
+    };
+  }
+
+  return null;
+}
+
+function parseSmartPatterns(message, userContext = {}) {
+  const text = message.toLowerCase().trim();
+
+  // Detect direct job keywords
+  if (text.includes('job') || text.includes('work') || text.includes('vacancy')) {
+    return {
+      action: 'clarify',
+      response: 'Great — which location are you interested in? Lagos, Abuja, Port Harcourt, or Remote?'
+    };
+  }
+
+  // Detect apply intent
+  if (text.includes('apply')) {
+    return {
+      action: 'apply',
+      response: 'Okay. Upload your CV (PDF, max 5MB), and I’ll submit the application for you.'
+    };
+  }
+
+  // Detect location-only queries
+  if (text.match(/lagos|abuja|port harcourt|ph|remote/)) {
+    return {
+      action: 'search_location',
+      response: `Okay — looking for jobs in ${text}. What role are you interested in?`
+    };
+  }
+
+  // Detect common role-only queries
+  const commonRoles = ['accountant', 'developer', 'nurse', 'teacher', 'engineer', 'sales'];
+  if (commonRoles.some(role => text.includes(role))) {
+    return {
+      action: 'search_role',
+      response: `Got it — searching for ${text} jobs. Do you want them in Lagos, Abuja, Port Harcourt, or Remote?`
+    };
+  }
+
+  // Fallback (Nigeria-friendly)
+  return {
+    action: 'fallback',
+    response: 'I didn’t fully understand. Try: "Find accounting jobs in Abuja" or "Apply for Lagos jobs".'
+  };
 }
 
 // Event handlers - keep existing

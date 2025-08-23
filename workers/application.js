@@ -1,8 +1,7 @@
 // workers/application.js - SMART APPLICATION PROCESSING FOR 1000+ USERS
 
 const { Worker } = require('bullmq');
-const { queueRedis } = require('../config/redis');
-const redis = require('../config/redis');
+const { redis, queueRedis } = require('../config/redis');
 const dbManager = require('../config/database');
 const logger = require('../utils/logger');
 const nodemailer = require('nodemailer');

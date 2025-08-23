@@ -9,7 +9,7 @@ const redisConfig = {
   password: config.get('redis.password'),
   maxRetriesPerRequest: null, // Required for BullMQ
   enableReadyCheck: false,
-  enableOfflineQueue: false,
+  enableOfflineQueue: true,
   commandTimeout: 10000,
   lazyConnect: true,
   keepAlive: 30000,

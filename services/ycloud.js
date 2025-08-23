@@ -1,4 +1,4 @@
-// services/ycloud.js - CORRECTED with actual YCloud document methods
+// services/ycloud.js - Enhanced with typing indicators
 
 const axios = require('axios');
 const config = require('../config');
@@ -19,10 +19,43 @@ class YCloudService {
     });
   }
 
-  // Send text message - ACTUAL YCloud format
-  async sendTextMessage(to, text) {
+  // 🎯 NEW: Show typing indicator and mark as read
+  async showTypingIndicator(inboundMessageId) {
+    try {
+      logger.info('Showing typing indicator', { messageId: inboundMessageId });
+
+      const response = await this.client.post(
+        `/v2/whatsapp/inboundMessages/${inboundMessageId}/typingIndicator`
+      );
+      
+      if (response.status === 200) {
+        logger.info('Typing indicator sent successfully', { messageId: inboundMessageId });
+        return true;
+      }
+      
+      return false;
+      
+    } catch (error) {
+      logger.error('Failed to show typing indicator', { 
+        messageId: inboundMessageId,
+        error: error.message,
+        status: error.response?.status,
+        data: error.response?.data
+      });
+      return false;
+    }
+  }
+
+  // Enhanced send text message with optional delay for natural feel
+  async sendTextMessage(to, text, options = {}) {
     try {
       const cleanTo = this.formatPhoneNumber(to);
+      
+      // Add natural delay if requested (simulates human typing speed)
+      if (options.typingDelay) {
+        const delay = Math.min(options.typingDelay, 25000); // Max 25 seconds per YCloud docs
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
       
       const payload = {
         from: this.whatsappNumber,
@@ -58,7 +91,76 @@ class YCloudService {
     }
   }
 
-  // CORRECTED: Download document with 2 actual YCloud methods
+  // 🎯 NEW: Send message with automatic typing indicator
+  async sendMessageWithTyping(to, text, inboundMessageId = null, typingDuration = null) {
+    try {
+      // Show typing indicator if we have the inbound message ID
+      if (inboundMessageId) {
+        await this.showTypingIndicator(inboundMessageId);
+      }
+
+      // Calculate natural typing delay based on message length
+      let delay = 0;
+      if (typingDuration === null && text) {
+        // Simulate human typing: ~40 WPM = 200 chars/minute = 3.3 chars/second
+        const typingSpeed = 3.3; // characters per second
+        delay = Math.min(Math.max((text.length / typingSpeed) * 1000, 1000), 25000); // 1-25 seconds
+      } else if (typingDuration) {
+        delay = Math.min(typingDuration, 25000);
+      }
+
+      // Wait for natural typing delay
+      if (delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+
+      // Send the actual message
+      return await this.sendTextMessage(to, text);
+      
+    } catch (error) {
+      logger.error('Send message with typing failed', { 
+        to, 
+        error: error.message 
+      });
+      return false;
+    }
+  }
+
+  // 🎯 NEW: Smart typing for different message types
+  async sendSmartMessage(to, text, context = {}) {
+    const { inboundMessageId, messageType = 'response', urgency = 'normal' } = context;
+    
+    let typingDuration;
+    
+    // Different typing durations based on message context
+    switch (messageType) {
+      case 'search_results':
+        typingDuration = 3000; // 3 seconds for search
+        break;
+      case 'processing':
+        typingDuration = 5000; // 5 seconds for processing
+        break;
+      case 'payment_info':
+        typingDuration = 2000; // 2 seconds for payment info
+        break;
+      case 'instant_response':
+        typingDuration = 500; // 0.5 seconds for quick replies
+        break;
+      default:
+        typingDuration = null; // Auto-calculate based on text length
+    }
+    
+    // Adjust for urgency
+    if (urgency === 'high') {
+      typingDuration = typingDuration ? typingDuration * 0.5 : 1000;
+    } else if (urgency === 'low') {
+      typingDuration = typingDuration ? typingDuration * 1.5 : null;
+    }
+    
+    return await this.sendMessageWithTyping(to, text, inboundMessageId, typingDuration);
+  }
+
+  // Download document (unchanged)
   async downloadDocument(document) {
     try {
       logger.info('Starting YCloud document download', {
@@ -77,11 +179,11 @@ class YCloudService {
           
           const response = await axios.get(document.link, {
             headers: {
-              'X-API-Key': this.apiKey  // CRITICAL: Required by YCloud
+              'X-API-Key': this.apiKey
             },
             responseType: 'arraybuffer',
             timeout: 30000,
-            maxContentLength: 5 * 1024 * 1024 // 5MB limit
+            maxContentLength: 5 * 1024 * 1024
           });
 
           fileBuffer = Buffer.from(response.data);
@@ -105,7 +207,6 @@ class YCloudService {
             error: linkError.message,
             status: linkError.response?.status
           });
-          // Continue to Method 2
         }
       }
 
@@ -114,7 +215,6 @@ class YCloudService {
         try {
           logger.info('Attempting media ID download', { mediaId: document.id });
           
-          // First get media info
           const mediaInfoResponse = await this.client.get(`/v2/whatsapp/media/${document.id}`);
           
           if (mediaInfoResponse.data && mediaInfoResponse.data.url) {
@@ -154,7 +254,6 @@ class YCloudService {
         }
       }
 
-      // Both methods failed
       throw new Error('All YCloud download methods failed');
 
     } catch (error) {
@@ -170,7 +269,7 @@ class YCloudService {
     }
   }
 
-  // Validate file type and size
+  // Validate file type and size (unchanged)
   validateDocument(document, buffer) {
     const allowedTypes = [
       'application/pdf',
@@ -195,7 +294,7 @@ class YCloudService {
     return true;
   }
 
-  // Format phone number for YCloud
+  // Format phone number (unchanged)
   formatPhoneNumber(phone) {
     let cleaned = phone.replace(/\D/g, '');
     
@@ -208,7 +307,7 @@ class YCloudService {
     return cleaned;
   }
 
-  // Set webhook URL (call once during setup)
+  // Set webhook URL (unchanged)
   async setWebhook(webhookUrl) {
     try {
       const payload = {
@@ -226,7 +325,7 @@ class YCloudService {
     }
   }
 
-  // Get account info (for debugging)
+  // Get account info (unchanged)
   async getAccountInfo() {
     try {
       const response = await this.client.get('/v2/whatsapp/businessAccounts');
