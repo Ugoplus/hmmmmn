@@ -149,7 +149,7 @@ class CleanTeaseThenPayBot {
       // Handle text messages
       if (!message || typeof message !== 'string') {
         return this.sendWhatsAppMessage(phone, 
-          'Hi! I help you find jobs in Nigeria 🇳🇬\n\nTry:\n• "Find developer jobs in Lagos" 💼\n• "Status" - Check your usage 📊\n• Upload your CV to apply! 📄',
+          'Hi! I help you find jobs in Nigeria\n\nTry:\n• "Find developer jobs in Lagos"\n• "Status" - Check your usage\n• Upload your CV to apply!',
           { instant: true }
         );
       }
@@ -459,9 +459,9 @@ class CleanTeaseThenPayBot {
       }
 
       // Build tease response
-      let response = `🔥 Found ${totalJobsFound} ${displayTitle} across Nigeria!\n\n`;
+      let response = `Found ${totalJobsFound} ${displayTitle} across Nigeria!\n\n`;
       
-      response += `📍 Available Locations:\n`;
+      response += `Available Locations:\n`;
       
       // Sort locations: primary first, then remote, then others by job count
       const sortedLocations = Object.entries(expandedResults)
@@ -477,8 +477,8 @@ class CleanTeaseThenPayBot {
         response += `• ${location}: ${count} job${count > 1 ? 's' : ''}\n`;
       });
 
-      response += `\n💳 Pay ₦300 to see full details and apply\n\n`;
-      response += `🎯 What you'll get:\n`;
+      response += `\nPay N300 to see full details and apply\n\n`;
+      response += `What you'll get:\n`;
       response += `✅ Full job descriptions & company details\n`;
       response += `✅ Salary ranges & requirements\n`;
       response += `✅ Apply to jobs in ALL locations\n`;
@@ -490,8 +490,8 @@ class CleanTeaseThenPayBot {
 
       // Generate payment link
       const paymentUrl = await this.initiateDailyPayment(identifier);
-      response += `💰 Pay now: ${paymentUrl}\n\n`;
-      response += `💵 Already paid? Type "show jobs"`;
+      response += `Pay now: ${paymentUrl}\n\n`;
+      response += `Already paid? Type "show jobs"`;
 
       // Send the enhanced tease
       await this.sendWhatsAppMessage(identifier, response, {
@@ -557,37 +557,37 @@ class CleanTeaseThenPayBot {
       const pendingJobsStr = await redis.get(`pending_jobs:${normalizePhone(identifier)}`);
       if (!pendingJobsStr) {
         return this.sendWhatsAppMessage(identifier,
-          '🔍 No jobs found. Search for jobs first:\n• "Find developer jobs in Lagos" 💼\n• "Remote marketing jobs" 🌐',
+          'No jobs found. Search for jobs first:\n• "Find developer jobs in Lagos"\n• "Remote marketing jobs"',
           { instant: true }
         );
       }
 
       const jobs = JSON.parse(pendingJobsStr);
 
-      let response = `📋 Here are your ${jobs.length} job${jobs.length > 1 ? 's' : ''}:\n\n`;
+      let response = `Here are your ${jobs.length} job${jobs.length > 1 ? 's' : ''}:\n\n`;
 
       jobs.forEach((job, index) => {
         const jobNumber = index + 1;
-        response += `${jobNumber}. 💼 ${job.title}\n`;
-        response += `   🏢 ${job.company}\n`;
-        response += `   📍 ${job.is_remote ? '🌐 Remote work' : job.location}\n`;
-        response += `   💰 ${job.salary || 'Competitive salary'}\n`;
+        response += `${jobNumber}. ${job.title}\n`;
+        response += `   ${job.company}\n`;
+        response += `   ${job.is_remote ? 'Remote work' : job.location}\n`;
+        response += `   ${job.salary || 'Competitive salary'}\n`;
         if (job.expires_at) {
           const daysLeft = Math.ceil((new Date(job.expires_at) - new Date()) / (1000 * 60 * 60 * 24));
-          response += `   ⏰ Expires in ${daysLeft} days\n`;
+          response += `   Expires in ${daysLeft} days\n`;
         }
-        response += `   💬 Reply: "apply ${jobNumber}" to apply\n\n`;
+        response += `   Reply: "apply ${jobNumber}" to apply\n\n`;
       });
 
-      response += `🚀 Quick Actions:\n`;
+      response += `**Quick Actions:**\n`;
       if (jobs.length === 1) {
         response += `• "apply" - Apply to this job\n`;
       } else {
         response += `• "apply all" - Apply to all ${jobs.length} jobs\n`;
         response += `• "apply 1,2,3" - Select specific jobs\n`;
       }
-      response += `• Upload CV after selecting jobs 📄\n\n`;
-      response += `📌 Next: Select jobs, then upload your CV for instant applications!`;
+      response += `• Upload CV after selecting jobs\n\n`;
+      response += `**Next:** Select jobs, then upload your CV for instant applications!`;
 
       // Store for selection
       await redis.set(`last_jobs:${normalizePhone(identifier)}`, JSON.stringify(jobs), 'EX', 3600);
@@ -906,26 +906,13 @@ class CleanTeaseThenPayBot {
         jobList += `...and ${selectedJobs.length - 3} more!\n`;
       }
 
-     const responseMessage =
-  `📌 You selected *${selectedJobs.length} job(s):*\n\n` +
-  `${jobList}\n` +
-  `📄 **Before You Upload Your CV (PDF/DOCX):**\n\n` +
-  `✅ **Put Your Full Name First:** The very first line on your CV should be your name\n` +
-  `✅ **Simple & Clear:** Don’t start with “CV”, “Resume” or job titles\n` +
-  `✅ **Add Your Contact:** Make sure your email and phone number are there\n\n` +
-  `❌ **Don’t start your CV with lines like:**\n` +
-  `• “Curriculum Vitae”\n` +
-  `• “Experience Accountant”\n` +
-  `• “Resume of...”\n\n` +
-  `💡 **Correct Example:**\n` +
-  `Tessy Bakare\n` +
-  `Software Developer\n` +
-  `tessy@email.com\n` +
-  `09012345678\n\n` +
-  `🚀 Upload your CV now and we’ll send your applications automatically!`;
+      const responseMessage =
+        `You selected *${selectedJobs.length} job(s):*\n\n` +
+        `${jobList}\n` +
+        `*Next step:* Upload your CV (PDF or DOCX).\n\n` +
+        `Once uploaded, your applications will be sent automatically to recruiters.`;
 
-return this.sendWhatsAppMessage(phone, responseMessage);
-
+      return this.sendWhatsAppMessage(phone, responseMessage);
 
     } catch (error) {
       logger.error('Job selection error', { phone, error: error.message });
@@ -943,7 +930,7 @@ return this.sendWhatsAppMessage(phone, responseMessage);
       
       if (!selectedJobs) {
         return this.sendWhatsAppMessage(phone,
-          '📋 **First select jobs to apply to!**\n\n🔍 Search for jobs:\n• "Find developer jobs in Lagos" 💼\n• Select jobs to apply to ✅\n• Then upload CV for applications! 📄',
+          '**First select jobs to apply to!**\n\nSearch for jobs:\n• "Find developer jobs in Lagos"\n• Select jobs to apply to\n• Then upload CV for applications!',
           { instant: true }
         );
       }
@@ -952,7 +939,7 @@ return this.sendWhatsAppMessage(phone, responseMessage);
       if (usage.needsPayment) {
         const paymentUrl = await this.initiateDailyPayment(phone);
         return this.sendWhatsAppMessage(phone, 
-          `💳 **Complete Payment First**\n\nPay ₦300 for 10 daily applications 📊\n\n${paymentUrl}\n\n📄 After payment, upload CV for instant applications!`,
+          `**Complete Payment First**\n\nPay N300 for 10 daily applications\n\n${paymentUrl}\n\nAfter payment, upload CV for instant applications!`,
           { instant: true }
         );
       }
@@ -1170,26 +1157,26 @@ return this.sendWhatsAppMessage(phone, responseMessage);
   }
 
   getHelpMessage() {
-    return `🤖 SmartCVNaija - Job Application Bot
+    return `SmartCVNaija - Job Application Bot
 
-🔍 Find Jobs:
-• "Find developer jobs in Lagos" 💻
-• "Remote marketing jobs" 🌐
-• "Jobs in Abuja" 🏙️
+Find Jobs:
+• "Find developer jobs in Lagos"
+• "Remote marketing jobs"
+• "Jobs in Abuja"
 
-💡 How it works:
-1. Search for jobs (free preview) 👀
-2. Pay ₦300 to see full details 💳
-3. Select jobs to apply to ✅
-4. Upload CV for instant applications 📄
+How it works:
+1. Search for jobs (free preview)
+2. Pay N300 to see full details
+3. Select jobs to apply to
+4. Upload CV for instant applications
 
-📝 Apply to Jobs:
-• Select jobs: "Apply to jobs 1,3,5" 🎯
-• Apply to all: "Apply to all jobs" 📋
+Apply to Jobs:
+• Select jobs: "Apply to jobs 1,3,5"
+• Apply to all: "Apply to all jobs"
 
-📊 Check Status: Type "status"
+Check Status: Type "status"
 
-🎯 Simple Process: Search → Pay → Select → Upload → Apply!`;
+Simple Process: Search → Pay → Select → Upload → Apply!`;
   }
 
   async handleStatusRequest(phone) {
@@ -1217,17 +1204,17 @@ return this.sendWhatsAppMessage(phone, responseMessage);
     }
     
     return this.sendWhatsAppMessage(phone, 
-      `📊 Your Status
+      `Your Status
 
-📈 Today's Usage:
+Today's Usage:
 • Applications used: ${usage.totalToday}/10
 • Remaining: ${usage.remaining}/10
-• Payment: ${usage.needsPayment ? '⌛ Required' : '✅ Active'}${statusText}
+• Payment: ${usage.needsPayment ? 'Required' : 'Active'}${statusText}
 
-🎯 Next Steps:
-${usage.needsPayment ? '1. Search for jobs 🔍\n2. Pay ₦300 to see details 💳\n3. Apply with CV 📄' : selectedJobs ? '1. Upload CV for instant applications! 📄' : pendingJobs ? '1. Pay ₦300 to see job details 💳\n2. Select and apply ✅' : '1. Search for jobs 🔍\n2. Pay to see details 💳\n3. Apply with CV 📄'}
+Next Steps:
+${usage.needsPayment ? '1. Search for jobs\n2. Pay N300 to see details\n3. Apply with CV' : selectedJobs ? '1. Upload CV for instant applications!' : pendingJobs ? '1. Pay N300 to see job details\n2. Select and apply' : '1. Search for jobs\n2. Pay to see details\n3. Apply with CV'}
 
-🚀 Try: "Find developer jobs in Lagos"`,
+Try: "Find developer jobs in Lagos"`,
       { instant: true }
     );
   }

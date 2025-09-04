@@ -792,147 +792,68 @@ class AIService {
     return result;
   }
 
- async generateCoverLetter(cvText, jobTitle = null, companyName = null, applicantName = null, identifier = null) {
+  async generateCoverLetter(cvText, jobTitle = null, companyName = null, identifier = null) {
     try {
-      // Add the applicantName parameter that was missing
       const job = await openaiQueue.add(
         'generate-cover-letter',
-        { 
-          cvText, 
-          jobTitle, 
-          companyName, 
-          applicantName: applicantName || '[Your Name]', // ✅ Add applicant name
-          userId: identifier 
-        },
-        { 
-          jobId: `cover-${identifier}-${Date.now()}`,
-          attempts: 2, // Reduce attempts for faster fallback
-          timeout: 15000 // 15 second timeout
-        }
+        { cvText, jobTitle, companyName, userId: identifier },
+        { jobId: `cover-${identifier}-${Date.now()}` }
       );
       
       try {
-        const result = await job.waitUntilFinished(queueEvents, 12000);
+        const result = await job.waitUntilFinished(queueEvents, 10000);
         
-        // Handle different response formats from the enhanced worker
-        if (typeof result === 'string' && result.length > 100) {
-          return result;
-        }
-        if (result?.content && result.content.length > 100) {
+        if (result?.content && result.content.length > 50) {
           return result.content;
         }
+        if (typeof result === 'string' && result.length > 50) {
+          return result;
+        }
         
-        logger.warn('AI cover letter generation returned insufficient content, using fallback', { 
-          identifier: identifier?.substring(0, 6) + '***',
-          resultType: typeof result,
-          resultLength: result?.length || result?.content?.length || 0
-        });
-        
-        return this.getEnhancedFallbackCoverLetter(cvText, jobTitle, companyName, applicantName);
-        
-      } catch (waitError) {
-        logger.warn('Cover letter generation timeout, using fallback', { 
-          identifier: identifier?.substring(0, 6) + '***',
-          error: waitError.message 
-        });
-        return this.getEnhancedFallbackCoverLetter(cvText, jobTitle, companyName, applicantName);
+        return this.getFallbackCoverLetter(jobTitle, companyName);
+      } catch (error) {
+        logger.warn('Cover letter generation timeout', { identifier });
+        return this.getFallbackCoverLetter(jobTitle, companyName);
       }
     } catch (error) {
-      logger.error('Cover letter generation failed, using fallback', { 
-        identifier: identifier?.substring(0, 6) + '***',
-        error: error.message 
-      });
-      return this.getEnhancedFallbackCoverLetter(cvText, jobTitle, companyName, applicantName);
+      logger.error('Cover letter generation error', { error: error.message });
+      return this.getFallbackCoverLetter(jobTitle, companyName);
     }
   }
 
-  // Enhanced fallback that extracts CV information (add this new method)
-  getEnhancedFallbackCoverLetter(cvText, jobTitle, companyName, applicantName = '[Your Name]') {
-    try {
-      // Extract basic info from CV
-      const cvInfo = this.extractBasicCVInfo(cvText || '');
-      const jobSpecific = this.getJobSpecificContent(jobTitle, cvInfo);
-      
-      return `Dear Hiring Manager,
+  getFallbackAnalysis(cvText, jobTitle = null) {
+    const text = (cvText || '').toLowerCase();
+    let overallScore = 50;
+    let jobMatchScore = 50;
 
-I am writing to express my strong interest in the ${jobTitle || 'position'} at ${companyName || 'your company'}. ${jobSpecific.opening}
+    if (text.includes('experience')) overallScore += 15;
+    if (text.includes('education')) overallScore += 10;
+    if (text.includes('skill')) overallScore += 10;
 
-${cvInfo.experienceText} ${jobSpecific.skills} ${cvInfo.skillsText}
-
-I would welcome the opportunity to discuss how my background can contribute to your team's success. Thank you for considering my application, and I look forward to hearing from you.
-
-Best regards,
-${applicantName}`;
-
-    } catch (error) {
-      logger.error('Enhanced fallback failed, using basic template', { error: error.message });
-      return this.getFallbackCoverLetter(jobTitle, companyName, applicantName);
+    if (jobTitle && text.includes(jobTitle.toLowerCase())) {
+      jobMatchScore += 20;
     }
-  }
-
-  // Add this helper method to extract basic CV information
-  extractBasicCVInfo(cvText) {
-    const text = cvText.toLowerCase();
     
-    // Extract education
-    let education = '';
-    if (text.includes('bachelor') || text.includes('bsc') || text.includes('b.sc')) {
-      education = 'bachelor\'s degree';
-    } else if (text.includes('master') || text.includes('msc') || text.includes('m.sc')) {
-      education = 'master\'s degree';
-    } else if (text.includes('hnd') || text.includes('diploma')) {
-      education = 'diploma';
-    } else if (text.includes('university') || text.includes('college')) {
-      education = 'university education';
-    }
-
-    // Extract years of experience
-    let yearsExp = '';
-    const yearMatches = text.match(/(\d+)\s*years?\s*(of\s*)?(experience|exp)/);
-    if (yearMatches) {
-      yearsExp = `${yearMatches[1]} years of experience`;
-    } else if (text.includes('experienced') || text.includes('experience')) {
-      yearsExp = 'relevant experience';
-    }
-
-    // Extract specific skills
-    const skills = [];
-    const skillKeywords = ['excel', 'microsoft office', 'accounting software', 'quickbooks', 'sap', 'sql', 'javascript', 'python', 'photoshop', 'autocad', 'project management'];
-    skillKeywords.forEach(skill => {
-      if (text.includes(skill)) {
-        skills.push(skill);
-      }
-    });
-
-    // Build descriptive text
-    let experienceText = '';
-    if (education && yearsExp) {
-      experienceText = `With my ${education} and ${yearsExp}, I am well-positioned for this role.`;
-    } else if (education) {
-      experienceText = `My ${education} has provided me with a strong foundation for this position.`;
-    } else if (yearsExp) {
-      experienceText = `My ${yearsExp} has prepared me well for this opportunity.`;
-    } else {
-      experienceText = 'My professional background has equipped me with relevant skills for this position.';
-    }
-
-    let skillsText = '';
-    if (skills.length > 0) {
-      const skillsList = skills.slice(0, 3).join(', ');
-      skillsText = `My proficiency in ${skillsList} aligns well with your requirements.`;
-    }
-
     return {
-      education,
-      yearsExp,
-      skills,
-      experienceText,
-      skillsText
+      overall_score: Math.min(Math.max(overallScore, 0), 100),
+      job_match_score: Math.min(Math.max(jobMatchScore, 0), 100),
+      skills_score: 60,
+      experience_score: 50,
+      education_score: 60,
+      experience_years: 2,
+      key_skills: ['Communication', 'Teamwork', 'Problem Solving'],
+      relevant_skills: ['Professional Experience', 'Leadership'],
+      education_level: 'Bachelor\'s',
+      summary: 'Professional with relevant experience',
+      strengths: ['Strong educational background', 'Good communication'],
+      areas_for_improvement: ['More certifications', 'Industry experience'],
+      recommendation: 'Good',
+      cv_quality: 'Good',
+      personalized_message: 'Great potential for the Nigerian job market!'
     };
   }
 
-  // Update the basic fallback method to accept applicant name
-  getFallbackCoverLetter(jobTitle = null, companyName = null, applicantName = '[Your Name]') {
+  getFallbackCoverLetter(jobTitle = null, companyName = null) {
     return `Dear Hiring Manager,
 
 I am writing to express my strong interest in the ${jobTitle || 'position'} at ${companyName || 'your company'}.
@@ -942,219 +863,28 @@ My background and experience make me a qualified candidate for this role in Nige
 I would welcome the opportunity to discuss how my experience can benefit your organization. Thank you for considering my application.
 
 Best regards,
-${applicantName}`;
+[Your Name]`;
   }
-getJobSpecificContent(jobTitle, cvInfo) {
-  const title = (jobTitle || '').toLowerCase();
-  
-  if (title.includes('account') || title.includes('finance')) {
-    return {
-      opening: `My background in accounting and financial management, combined with ${cvInfo.experienceText ? 'my professional experience' : 'my educational foundation'}, makes me well-suited for this role.`,
-      skills: 'My understanding of financial processes and attention to detail position me well for this accounting role.'
-    };
-  } else if (title.includes('developer') || title.includes('software') || title.includes('it')) {
-    return {
-      opening: 'My technical background and passion for technology make me an ideal candidate for this development position.',
-      skills: 'My programming knowledge and problem-solving abilities align with your technical requirements.'
-    };
-  } else if (title.includes('marketing') || title.includes('sales')) {
-    return {
-      opening: 'My experience in client relations and understanding of market dynamics prepare me well for this marketing role.',
-      skills: 'My communication skills and market awareness make me a strong candidate for your sales team.'
-    };
-  } else if (title.includes('manager') || title.includes('supervisor')) {
-    return {
-      opening: 'My leadership capabilities and management experience make me well-qualified for this supervisory position.',
-      skills: 'My ability to coordinate teams and manage projects effectively suits your management requirements.'
-    };
-  } else if (title.includes('engineer')) {
-    return {
-      opening: 'My technical expertise and engineering background make me well-suited for this engineering position.',
-      skills: 'My analytical skills and technical knowledge align perfectly with your engineering requirements.'
-    };
-  } else if (title.includes('nurse') || title.includes('medical') || title.includes('healthcare')) {
-    return {
-      opening: 'My healthcare background and commitment to patient care make me an ideal candidate for this medical position.',
-      skills: 'My clinical knowledge and compassionate approach align with your healthcare requirements.'
-    };
-  } else if (title.includes('teacher') || title.includes('education')) {
-    return {
-      opening: 'My educational background and passion for learning make me well-qualified for this teaching position.',
-      skills: 'My communication skills and dedication to student success align with your educational requirements.'
-    };
-  } else if (title.includes('admin') || title.includes('office')) {
-    return {
-      opening: 'My administrative experience and organizational skills make me well-suited for this office position.',
-      skills: 'My attention to detail and administrative expertise align with your office requirements.'
-    };
-  } else if (title.includes('customer') || title.includes('service')) {
-    return {
-      opening: 'My customer service background and communication skills make me ideal for this client-facing position.',
-      skills: 'My interpersonal skills and problem-solving abilities align with your service requirements.'
-    };
-  }
-  
-  // Default fallback
-  return {
-    opening: `My professional background and ${cvInfo.education || 'educational foundation'} make me a qualified candidate for this role.`,
-    skills: 'My relevant skills and dedication to excellence position me well for this opportunity.'
-  };
-}
 
-// Also add this improved fallback analysis method
-getFallbackAnalysis(cvText, jobTitle) {
-  try {
-    const text = (cvText || '').toLowerCase();
-    const title = (jobTitle || '').toLowerCase();
-    
-    // Base scores
-    let overallScore = 75;
-    let jobMatchScore = 70;
-    let skillsScore = 75;
-    let experienceScore = 65;
-    let educationScore = 70;
-    let experienceYears = 2;
-    
-    // Education detection and scoring
-    if (text.includes('bachelor') || text.includes('bsc') || text.includes('b.sc')) {
-      educationScore += 10;
-      overallScore += 5;
-    } else if (text.includes('master') || text.includes('msc') || text.includes('m.sc')) {
-      educationScore += 15;
-      overallScore += 8;
-    } else if (text.includes('phd') || text.includes('doctorate')) {
-      educationScore += 20;
-      overallScore += 10;
-    } else if (text.includes('diploma') || text.includes('hnd')) {
-      educationScore += 8;
-      overallScore += 3;
-    }
-    
-    // Experience detection
-    const yearMatches = text.match(/(\d+)\s*years?\s*(of\s*)?(experience|exp)/gi);
-    if (yearMatches && yearMatches.length > 0) {
-      const years = parseInt(yearMatches[0].match(/(\d+)/)[1]);
-      experienceYears = Math.min(15, Math.max(1, years));
-      experienceScore = Math.min(90, 50 + (experienceYears * 3));
-      overallScore += Math.min(8, experienceYears * 1.5);
-    }
-    
-    // Skills detection
-    const commonSkills = [
-      'microsoft office', 'excel', 'word', 'powerpoint',
-      'communication', 'teamwork', 'leadership', 'management',
-      'analysis', 'problem solving', 'organization'
-    ];
-    
-    let skillMatches = 0;
-    commonSkills.forEach(skill => {
-      if (text.includes(skill)) skillMatches++;
+  logMetrics() {
+    const total = this.metrics.totalRequests;
+    if (total === 0) return;
+
+    const cacheHitRate = Math.round((this.metrics.cacheHits / total) * 100);
+    const patternRate = Math.round((this.metrics.patternMatches / total) * 100);
+    const aiRate = Math.round((this.metrics.aiCalls / total) * 100);
+
+    logger.info('Performance metrics', {
+      totalRequests: total,
+      cacheHitRate: `${cacheHitRate}%`,
+      patternMatchRate: `${patternRate}%`,
+      aiCallRate: `${aiRate}%`,
+      cacheSize: this.queryCache.size
     });
-    
-    skillsScore = Math.min(90, 60 + (skillMatches * 4));
-    
-    // Job-specific matching
-    if (jobTitle && title) {
-      const jobKeywords = this.getJobKeywordsForAnalysis(title);
-      let keywordMatches = 0;
-      
-      jobKeywords.forEach(keyword => {
-        if (text.includes(keyword.toLowerCase())) {
-          keywordMatches++;
-        }
-      });
-      
-      if (jobKeywords.length > 0) {
-        const matchPercentage = (keywordMatches / jobKeywords.length);
-        jobMatchScore = Math.round(55 + (matchPercentage * 35)); // 55-90 range
-      }
-    }
-    
-    // Calculate overall score
-    overallScore = Math.round((jobMatchScore + skillsScore + experienceScore + educationScore) / 4);
-    overallScore = Math.max(55, Math.min(90, overallScore));
-    
-    const analysis = {
-      overall_score: overallScore,
-      job_match_score: jobMatchScore,
-      skills_score: Math.max(55, Math.min(90, skillsScore)),
-      experience_score: Math.max(50, Math.min(90, experienceScore)),
-      education_score: Math.max(50, Math.min(90, educationScore)),
-      experience_years: experienceYears,
-      summary: `Professional background with ${experienceYears} years experience. Overall match: ${overallScore}%`
-    };
-    
-    return analysis;
-    
-  } catch (error) {
-    logger.error('Fallback analysis failed', { error: error.message });
-    
-    // Ultimate fallback
-    return {
-      overall_score: 75,
-      job_match_score: 70,
-      skills_score: 75,
-      experience_score: 65,
-      education_score: 70,
-      experience_years: 3,
-      summary: 'Standard professional background assessment'
-    };
+
+    // Reset metrics
+    this.metrics = { cacheHits: 0, patternMatches: 0, aiCalls: 0, totalRequests: 0 };
   }
 }
-
-// Helper method for job-specific keywords
-getJobKeywordsForAnalysis(jobTitle) {
-  const keywords = {
-    'account': ['accounting', 'bookkeeping', 'financial', 'audit', 'tax', 'excel', 'quickbooks', 'finance'],
-    'develop': ['programming', 'coding', 'javascript', 'python', 'react', 'node', 'software', 'web'],
-    'engineer': ['engineering', 'technical', 'design', 'analysis', 'problem solving', 'mathematics'],
-    'market': ['marketing', 'sales', 'customer', 'client', 'business development', 'advertising'],
-    'manag': ['management', 'leadership', 'team', 'project', 'planning', 'strategy', 'coordination'],
-    'nurs': ['nursing', 'patient care', 'medical', 'healthcare', 'clinical', 'hospital'],
-    'teach': ['teaching', 'education', 'curriculum', 'student', 'learning', 'instruction'],
-    'admin': ['administration', 'office', 'organization', 'scheduling', 'coordination', 'clerical'],
-    'customer service': ['customer service', 'support', 'communication', 'problem resolution', 'helpdesk']
-  };
-  
-  for (const [key, keywordList] of Object.entries(keywords)) {
-    if (jobTitle.includes(key)) {
-      return keywordList;
-    }
-  }
-  
-  return ['professional', 'experience', 'skills', 'education', 'communication'];
-}
-
-
-
-
-
-logMetrics() {
-    if (this.metrics.totalRequests > 0) {
-      const cacheHitRate = Math.round((this.metrics.cacheHits / this.metrics.totalRequests) * 100);
-      const patternMatchRate = Math.round((this.metrics.patternMatches / this.metrics.totalRequests) * 100);
-      const aiCallRate = Math.round((this.metrics.aiCalls / this.metrics.totalRequests) * 100);
-      
-      logger.info('AI Service Performance Metrics', {
-        totalRequests: this.metrics.totalRequests,
-        cacheHits: this.metrics.cacheHits,
-        patternMatches: this.metrics.patternMatches,
-        aiCalls: this.metrics.aiCalls,
-        cacheHitRate: `${cacheHitRate}%`,
-        patternMatchRate: `${patternMatchRate}%`,
-        aiCallRate: `${aiCallRate}%`,
-        cacheSize: this.queryCache.size,
-        maxCacheSize: this.cacheMaxSize
-      });
-    }
-  }
-
-
-
-
-
-
-}
-
 
 module.exports = new AIService();

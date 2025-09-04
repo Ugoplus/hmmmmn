@@ -31,13 +31,13 @@ class DatabaseManager {
         password: config.get('database.password'),
         
         // ? INCREASED CONNECTION POOL
-        max: 50,                    // Increased from 20 to 50
-        min: 10,                    // Minimum connections always available
+        max: 200,                    // Increased from 20 to 50
+        min: 25,                    // Minimum connections always available
         
         // ? OPTIMIZED TIMEOUTS
-        idleTimeoutMillis: 10000,   // Close idle connections after 10s
-        connectionTimeoutMillis: 3000, // 3s connection timeout
-        acquireTimeoutMillis: 30000,   // 30s to acquire connection
+        idleTimeoutMillis: 30000,   // Close idle connections after 10s
+        connectionTimeoutMillis: 1000, // 3s connection timeout
+        acquireTimeoutMillis: 60000,   // 30s to acquire connection
         
         // ? STATEMENT TIMEOUT
         statement_timeout: 30000,   // 30s statement timeout
@@ -53,7 +53,7 @@ class DatabaseManager {
         
         // ? CONNECTION VALIDATION
         keepAlive: true,
-        keepAliveInitialDelayMillis: 10000,
+        keepAliveInitialDelayMillis: 0,
         
         // ? ERROR HANDLING
         allowExitOnIdle: false

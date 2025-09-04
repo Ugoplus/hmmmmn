@@ -46,11 +46,22 @@ const config = convict({
   baseUrl: { format: String, default: 'http://localhost:3000', env: 'BASE_URL' },
   
   // Email configuration
-  SMTP_HOST: { format: String, default: 'smtp.gmail.com', env: 'SMTP_HOST' },
-  SMTP_PORT: { format: Number, default: 587, env: 'SMTP_PORT' },
-  SMTP_USER: { format: String, default: '', env: 'SMTP_USER' },
-  SMTP_PASS: { format: String, default: '', env: 'SMTP_PASS' }
+ smtp: {
+    host: { format: String, default: 'smtp.zeptomail.com', env: 'SMTP_HOST' },
+    port: { format: Number, default: 587, env: 'SMTP_PORT' },
+    user: { format: String, default: 'emailapikey', env: 'SMTP_USER' },
+    pass: { format: String, default: '', env: 'SMTP_PASS' }
+  },
+  
+  // NEW: Separate confirmation email config
+  confirmation: {
+    smtp: {
+      host: { format: String, default: 'smtp.zeptomail.com', env: 'CONFIRMATION_SMTP_HOST' },
+      port: { format: Number, default: 587, env: 'CONFIRMATION_SMTP_PORT' },
+      user: { format: String, default: 'emailapikey', env: 'CONFIRMATION_SMTP_USER' },
+      pass: { format: String, default: '', env: 'CONFIRMATION_SMTP_PASS' }
+    }
+  }
 });
-
 config.validate({ allowed: 'strict' });
 module.exports = config;

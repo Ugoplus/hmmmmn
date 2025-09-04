@@ -1,5 +1,6 @@
 // server.js - PRODUCTION READY FOR 1000+ USERS
-
+console.log('=== SERVER STARTING ===', new Date());
+console.log('NODE_ENV:', process.env.NODE_ENV);
 require('events').EventEmitter.defaultMaxListeners = 30; // Increased from 20
 require('dotenv').config();
 const express = require('express');
@@ -254,15 +255,21 @@ app.get('/api/health', async (req, res) => {
 });
 
 // ✅ SYSTEM HEALTH CHECK FUNCTION
+// CORRECTED VERSION for server.js
 async function checkSystemHealth() {
   try {
     const memUsage = process.memoryUsage();
-    const memoryUsagePercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
+    const heapLimit = require('v8').getHeapStatistics().heap_size_limit;
+    const memoryUsagePercent = (memUsage.heapUsed / heapLimit) * 100;  // FIXED!
     
     return {
-      healthy: memoryUsagePercent < 90, // Under 90% memory usage
+      healthy: memoryUsagePercent < 90,
       memoryUsage: memoryUsagePercent,
-      uptime: process.uptime()
+      uptime: process.uptime(),
+      memoryDetails: {
+        usedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
+        limitMB: Math.round(heapLimit / 1024 / 1024)
+      }
     };
   } catch (error) {
     return { healthy: false, error: error.message };
@@ -307,13 +314,14 @@ app.get('/api/metrics', async (req, res) => {
       timestamp: new Date().toISOString(),
       uptime: Math.round(process.uptime()),
       memory: {
-        usage_percent: Math.round((memUsage.heapUsed / memUsage.heapTotal) * 100),
-        heap_used_mb: Math.round(memUsage.heapUsed / 1024 / 1024),
-        heap_total_mb: Math.round(memUsage.heapTotal / 1024 / 1024),
-        rss_mb: Math.round(memUsage.rss / 1024 / 1024),
-        system_total_gb: parseFloat(totalMemoryGB),
-        system_used_gb: parseFloat(usedMemoryGB)
-      },
+       usage_percent: Math.round((memUsage.heapUsed / require('v8').getHeapStatistics().heap_size_limit) * 100),
+       heap_used_mb: Math.round(memUsage.heapUsed / 1024 / 1024),
+       heap_total_mb: Math.round(memUsage.heapTotal / 1024 / 1024),
+       heap_limit_mb: Math.round(require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024),
+       rss_mb: Math.round(memUsage.rss / 1024 / 1024),
+       system_total_gb: parseFloat(totalMemoryGB),
+       system_used_gb: parseFloat(usedMemoryGB)
+       },
       cpu: {
         cores: os.cpus().length,
         load_average: os.loadavg()[0].toFixed(2)
