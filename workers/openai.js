@@ -596,6 +596,19 @@ function getJobSpecificContent(jobTitle, cvInfo) {
   };
 }
 
+function getFallbackCoverLetter(jobTitle, companyName, applicantName = '[Your Name]') {
+  return `Dear Hiring Manager,
+
+I am writing to express my strong interest in the ${jobTitle || 'position'} at ${companyName || 'your company'}. My professional background and experience make me well-qualified for this role in Nigeria's competitive job market.
+
+I have developed relevant skills that align with your requirements and am confident in my ability to contribute effectively to your team. I am eager to bring my expertise and dedication to help drive your organization's continued success.
+
+I would welcome the opportunity to discuss how my experience can benefit your team. Thank you for considering my application, and I look forward to hearing from you.
+
+Best regards,
+${applicantName}`;
+}
+
 function parseSimpleCommand(message) {
   const text = message.toLowerCase().trim();
 

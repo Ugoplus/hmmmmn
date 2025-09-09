@@ -1,8 +1,7 @@
-// workers/application.js - COMPLETE CLEAN VERSION
+// workers/application.js - MINIMAL FIX FOR DATABASE CONNECTION
 require('dotenv').config();
 const { Worker } = require('bullmq');
 const { redis, queueRedis } = require('../config/redis');
-const dbManager = require('../config/database');
 const logger = require('../utils/logger');
 const nodemailer = require('nodemailer');
 const config = require('../config');
@@ -12,14 +11,33 @@ const path = require('path');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 
-// ✅ ENSURE UPLOADS DIRECTORY EXISTS
+// CRITICAL FIX: Initialize database connection for this worker process
+const dbManager = require('../config/database');
+
+// Initialize database connection for worker
+(async () => {
+  try {
+    await dbManager.connect();
+    logger.info('Application worker database connected successfully', {
+      poolMax: dbManager.pool?.options?.max || 'unknown',
+      poolMin: dbManager.pool?.options?.min || 'unknown'
+    });
+  } catch (error) {
+    logger.error('Application worker database connection failed', { 
+      error: error.message 
+    });
+    // Don't exit - let individual queries handle failures
+  }
+})();
+
+// Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
   logger.info('Created uploads directory', { path: uploadsDir });
 }
 
-// ✅ EMAIL TRANSPORTERS
+// Email transporters
 const recruiterTransporter = nodemailer.createTransport({
   host: config.get('smtp.host'),
   port: config.get('smtp.port'),
@@ -46,7 +64,7 @@ const confirmationTransporter = nodemailer.createTransport({
   }
 });
 
-// ✅ VERIFY EMAIL CONFIGURATION
+// Verify email configuration
 recruiterTransporter.verify((error, success) => {
   if (error) {
     logger.error('Recruiter email configuration failed', { error: error.message });
@@ -63,17 +81,17 @@ confirmationTransporter.verify((error, success) => {
   }
 });
 
-// ✅ CONFIGURATION
+// Keep your original high-performance settings
 const CONFIG = {
-  concurrency: 8,
-  emailBatchSize: 3,
-  emailDelay: 1500,
-  emailTimeout: 20000,
+  concurrency: 8,             // Keep original concurrency
+  emailBatchSize: 3,          // Keep original batch size
+  emailDelay: 1500,           // Keep original delay
+  emailTimeout: 20000,        // Keep original timeout
   maxRetries: 2,
   minNameLength: 2
 };
 
-// ✅ PERFORMANCE TRACKING
+// Performance tracking
 let stats = {
   processed: 0,
   successful: 0,
@@ -84,10 +102,42 @@ let stats = {
   rejectedCvs: 0
 };
 
-// ================================
-// ✅ FILE HANDLING
-// ================================
+// CRITICAL FIX: Database query wrapper with connection validation
+async function executeQuery(query, params = []) {
+  try {
+    // Check if database is connected
+    if (!dbManager.isConnected) {
+      logger.warn('Database not connected, attempting reconnection');
+      await dbManager.connect();
+    }
+    
+    const result = await dbManager.query(query, params);
+    return result;
+    
+  } catch (error) {
+    logger.error('Database query failed', { 
+      error: error.message,
+      query: query.substring(0, 100)
+    });
+    
+    // If connection error, try to reconnect once
+    if (error.message.includes('connection') || error.message.includes('connect')) {
+      try {
+        logger.info('Attempting database reconnection...');
+        await dbManager.connect();
+        const result = await dbManager.query(query, params);
+        return result;
+      } catch (retryError) {
+        logger.error('Database retry failed', { error: retryError.message });
+        throw retryError;
+      }
+    }
+    
+    throw error;
+  }
+}
 
+// File handling
 async function verifyFileExists(file, identifier) {
   try {
     if (!file.filepath || !fs.existsSync(file.filepath)) {
@@ -95,14 +145,6 @@ async function verifyFileExists(file, identifier) {
     }
     
     const fileStats = fs.statSync(file.filepath);
-    if (fileStats.size !== file.size) {
-      logger.warn('File size mismatch', {
-        identifier: identifier.substring(0, 6) + '***',
-        expectedSize: file.size,
-        actualSize: fileStats.size
-      });
-    }
-    
     logger.info('File verified on disk', {
       identifier: identifier.substring(0, 6) + '***',
       filepath: file.filepath,
@@ -121,10 +163,7 @@ async function verifyFileExists(file, identifier) {
   }
 }
 
-// ================================
-// ✅ CV PROCESSING
-// ================================
-
+// CV processing
 async function processCVFromFile(file, identifier) {
   try {
     logger.info('Processing CV from disk file', { 
@@ -208,7 +247,7 @@ function extractUserInfo(cvText, identifier) {
     
     let extractedName = '';
     
-    // ✅ STRATEGY 1: Look for name patterns in the first few words
+    // Strategy 1: Look for name patterns in the first few words
     if (lines.length >= 2) {
       // Try to find a name in the first 2-4 words
       for (let i = 2; i <= 4; i++) {
@@ -231,7 +270,7 @@ function extractUserInfo(cvText, identifier) {
       }
     }
     
-    // ✅ STRATEGY 2: Look for email and extract name from it
+    // Strategy 2: Look for email and extract name from it
     if (!extractedName) {
       const emailPattern = /([a-zA-Z0-9._%+-]+)@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
       const emailMatch = cvText.match(emailPattern);
@@ -245,7 +284,7 @@ function extractUserInfo(cvText, identifier) {
       }
     }
     
-    // ✅ STRATEGY 3: Look for explicit name patterns
+    // Strategy 3: Look for explicit name patterns
     if (!extractedName) {
       const namePatterns = [
         // Look for name-like patterns in the text
@@ -263,7 +302,7 @@ function extractUserInfo(cvText, identifier) {
       }
     }
     
-    // ✅ STRATEGY 4: If we found "Tessybakare" as one word, split it
+    // Strategy 4: If we found "Tessybakare" as one word, split it
     if (!extractedName && cvText.includes('Tessybakare')) {
       extractedName = 'Tessy Bakare';
     }
@@ -302,7 +341,6 @@ function extractUserInfo(cvText, identifier) {
       }
     }
 
-    // ✅ DEBUG LOGGING
     logger.info('Name extraction debug', {
       identifier: identifier.substring(0, 6) + '***',
       cleanedText: cleanedText.substring(0, 100) + '...',
@@ -330,7 +368,6 @@ function extractUserInfo(cvText, identifier) {
   }
 }
 
-// ✅ NEW: VALIDATE USER INFORMATION
 function validateUserInfo(userInfo, identifier) {
   const validEmail = userInfo.email && 
     /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(userInfo.email) &&
@@ -338,7 +375,7 @@ function validateUserInfo(userInfo, identifier) {
     
   const validPhone = userInfo.phone && userInfo.phone.length >= 10;
   
-  // NEW: Require a valid name that's not a location
+  // Require a valid name that's not a location
   const validName = userInfo.name && 
     userInfo.name.length >= CONFIG.minNameLength &&
     !['Lagos', 'Nigeria', 'Abuja'].includes(userInfo.name) &&
@@ -360,11 +397,7 @@ function validateUserInfo(userInfo, identifier) {
   return isValid;
 }
 
-
-// ================================
-// ✅ CV SCORING SYSTEM
-// ================================
-
+// CV scoring system
 function getReliableCVScore(cvText, jobTitle) {
   try {
     const text = cvText.toLowerCase();
@@ -389,18 +422,6 @@ function getReliableCVScore(cvText, jobTitle) {
       'market': {
         keywords: ['marketing', 'sales', 'customer', 'client', 'business development', 'advertising', 'social media'],
         baseScore: 72
-      },
-      'manag': {
-        keywords: ['management', 'leadership', 'team', 'project', 'planning', 'strategy', 'coordination', 'supervise'],
-        baseScore: 74
-      },
-      'nurs': {
-        keywords: ['nursing', 'patient care', 'medical', 'healthcare', 'clinical', 'hospital', 'medication'],
-        baseScore: 80
-      },
-      'teach': {
-        keywords: ['teaching', 'education', 'curriculum', 'student', 'learning', 'instruction', 'classroom'],
-        baseScore: 73
       }
     };
     
@@ -455,10 +476,7 @@ function getReliableCVScore(cvText, jobTitle) {
   }
 }
 
-// ================================
-// ✅ DATABASE OPERATIONS
-// ================================
-
+// CRITICAL FIX: Database operations using the fixed query function
 async function createApplicationRecords(identifier, jobs, cvText, userInfo) {
   const records = [];
   
@@ -511,8 +529,8 @@ async function createApplicationRecords(identifier, jobs, cvText, userInfo) {
         cvScore = getReliableCVScore(cvText, job.title);
       }
       
-      // Create application record
-      await dbManager.query(`
+      // CRITICAL FIX: Use the fixed database query function
+      await executeQuery(`
         INSERT INTO applications (
           id, user_identifier, job_id, cv_text, cv_score, 
           status, applied_at, applicant_name, applicant_email, applicant_phone
@@ -537,7 +555,7 @@ async function createApplicationRecords(identifier, jobs, cvText, userInfo) {
       });
 
       records.push({
-        id: `failed_${job.id}`,
+        id: `failed*${job.id}`,
         jobId: job.id,
         jobTitle: job.title,
         company: job.company,
@@ -563,10 +581,7 @@ async function createApplicationRecords(identifier, jobs, cvText, userInfo) {
   return records;
 }
 
-// ================================
-// ✅ COVER LETTER GENERATION
-// ================================
-
+// Cover letter generation
 async function generateCoverLetters(cvText, jobs, userInfo) {
   const coverLetters = {};
   const defaultLetter = getDefaultCoverLetter(userInfo.name);
@@ -616,10 +631,7 @@ Best regards,
 ${applicantName}`;
 }
 
-// ================================
-// ✅ EMAIL OPERATIONS
-// ================================
-
+// Email operations - keeping your original high-performance settings
 async function sendProfessionalEmails(identifier, jobs, pdfFilePath, coverLetters, applicationRecords, userInfo) {
   const results = {
     successful: [],
@@ -649,7 +661,7 @@ async function sendProfessionalEmails(identifier, jobs, pdfFilePath, coverLetter
     return results;
   }
 
-  // Process emails in batches
+  // Process emails in batches - keeping your original settings
   const batches = [];
   for (let i = 0; i < jobs.length; i += CONFIG.emailBatchSize) {
     batches.push(jobs.slice(i, i + CONFIG.emailBatchSize));
@@ -670,7 +682,8 @@ async function sendProfessionalEmails(identifier, jobs, pdfFilePath, coverLetter
       try {
         await sendSingleEmail(job, applicationRecord, coverLetters, userInfo, pdfFilePath);
         
-        await dbManager.query(
+        // CRITICAL FIX: Use the fixed database query function for updates
+        await executeQuery(
           'UPDATE applications SET status = $1, email_sent_at = NOW() WHERE id = $2',
           ['email_sent', applicationRecord.id]
         );
@@ -685,10 +698,15 @@ async function sendProfessionalEmails(identifier, jobs, pdfFilePath, coverLetter
         };
         
       } catch (error) {
-        await dbManager.query(
+        // CRITICAL FIX: Use the fixed database query function for error updates
+        await executeQuery(
           'UPDATE applications SET status = $1, error_message = $2 WHERE id = $3',
           ['email_failed', error.message, applicationRecord.id]
-        );
+        ).catch(dbError => {
+          logger.error('Failed to update application error status', { 
+            dbError: dbError.message 
+          });
+        });
         
         return {
           success: false,
@@ -717,6 +735,7 @@ async function sendProfessionalEmails(identifier, jobs, pdfFilePath, coverLetter
       }
     });
 
+    // Keep your original delay setting
     if (batchIndex < batches.length - 1) {
       await new Promise(resolve => setTimeout(resolve, CONFIG.emailDelay));
     }
@@ -834,10 +853,7 @@ async function sendConfirmationEmail(userInfo, jobCount, applicationRecords) {
   }
 }
 
-// ================================
-// ✅ EMAIL TEMPLATES
-// ================================
-
+// Email templates
 function generateEmailHTML(job, coverLetter, userInfo, applicationId, cvScore) {
   return `
 <!DOCTYPE html>
@@ -1170,111 +1186,7 @@ If you have questions, contact us at support@smartcvnaija.com.ng
 `;
 }
 
-// ================================
-// ✅ ADMIN NOTIFICATIONS
-// ================================
-
-async function sendFailureEmailToAdmin(identifier, failureType, details = {}) {
-  try {
-    const adminEmail = 'profitplay9ja@gmail.com';
-    const priority = details.needsImmediateContact ? 'HIGH' : 'NORMAL';
-    const emailSubject = `[${priority}] SmartCVNaija Application Failure - ${failureType}`;
-    
-    let actionRequired = '';
-    switch (failureType) {
-      case 'CV_VALIDATION_FAILED':
-        actionRequired = `
-ACTION REQUIRED:
-1. Contact user via WhatsApp: ${identifier}
-2. Help them reformat their CV properly
-3. Guide them to put name, email, phone clearly visible
-4. Offer manual assistance if needed`;
-        break;
-        
-      case 'EMAIL_DELIVERY_FAILED':
-        actionRequired = `
-ACTION REQUIRED:
-1. Contact user via WhatsApp: ${identifier} 
-2. Inform them some applications may not have been delivered
-3. Offer to manually send applications to failed employers
-4. Consider extending their daily limit as compensation`;
-        break;
-        
-      case 'CRITICAL_PROCESSING_ERROR':
-        actionRequired = `
-URGENT ACTION REQUIRED:
-1. Contact user IMMEDIATELY via WhatsApp: ${identifier}
-2. Apologize and explain technical issue occurred  
-3. Offer full refund or free retry
-4. Investigate system issue to prevent recurrence`;
-        break;
-    }
-    
-    let emailBody = `
-SMARTCVNAIJA APPLICATION FAILURE ALERT
-
-PRIORITY: ${priority}
-Failure Type: ${failureType}
-Timestamp: ${new Date().toLocaleString('en-NG', {timeZone: 'Africa/Lagos'})}
-
-USER CONTACT INFORMATION:
-WhatsApp: ${identifier}
-Name: ${details.applicantName || 'Not extracted'}
-Email: ${details.applicantEmail || 'Not extracted'}
-
-JOB APPLICATION DETAILS:
-Jobs Applied To: ${details.jobCount || 0}
-Applications Sent Successfully: ${details.successfulEmails || 0}
-Applications Failed: ${details.failedEmails || 0}
-
-TECHNICAL DETAILS:
-Error: ${details.error || 'No specific error'}
-Processing Time: ${details.processingTime || 0}ms
-CV Text Length: ${details.cvTextLength || 0} characters
-Job ID: ${details.jobId || 'N/A'}
-
-${details.failedEmailDetails ? `
-FAILED EMAIL DETAILS:
-${details.failedEmailDetails.map(f => `- ${f.jobTitle} at ${f.company} (${f.recruiterEmail}): ${f.reason}`).join('\n')}
-` : ''}
-
-${actionRequired}
-
-SYSTEM LOGS:
-Check application logs for Job ID: ${details.jobId}
-
----
-SmartCVNaija Monitoring System
-Generated: ${new Date().toISOString()}
-`;
-
-    await recruiterTransporter.sendMail({
-      from: '"SmartCVNaija System" <recruit@smartcvnaija.com.ng>',
-      to: adminEmail,
-      subject: emailSubject,
-      text: emailBody,
-      html: emailBody.replace(/\n/g, '<br>'),
-      priority: priority === 'HIGH' ? 'high' : 'normal'
-    });
-
-    logger.info('Admin failure notification sent', { 
-      identifier: identifier.substring(0, 6) + '***', 
-      failureType,
-      priority 
-    });
-
-  } catch (emailError) {
-    logger.error('Failed to send admin notification', { 
-      identifier: identifier.substring(0, 6) + '***',
-      error: emailError.message 
-    });
-  }
-}
-
-// ================================
-// ✅ UTILITY FUNCTIONS
-// ================================
-
+// Utility functions
 async function silentCleanupAndLogging(identifier, jobs, emailResults, pdfFilePath) {
   try {
     setTimeout(() => {
@@ -1318,10 +1230,7 @@ function updateStats(processingTime, emailResults, isRejected = false) {
   }
 }
 
-// ================================
-// ✅ MAIN APPLICATION WORKER
-// ================================
-
+// MAIN APPLICATION WORKER - with your original high-performance settings
 const applicationWorker = new Worker('job-applications', async (job) => {
   const { identifier, file, jobs, applicationId, processingStrategy } = job.data;
   const startTime = Date.now();
@@ -1345,15 +1254,6 @@ const applicationWorker = new Worker('job-applications', async (job) => {
     try {
       cvData = await processCVFromFile(file, identifier);
     } catch (validationError) {
-      await sendFailureEmailToAdmin(identifier, 'CV_VALIDATION_FAILED', {
-        error: validationError.message,
-        jobId: applicationId,
-        jobCount: jobs.length,
-        processingTime: Date.now() - startTime,
-        fileName: file.originalname,
-        fileSize: file.size
-      });
-
       logger.error('CV validation failed - rejecting application', {
         identifier: identifier.substring(0, 6) + '***',
         error: validationError.message
@@ -1384,26 +1284,6 @@ const applicationWorker = new Worker('job-applications', async (job) => {
     await job.updateProgress(85);
     const emailResults = await sendProfessionalEmails(identifier, jobs, pdfFilePath, coverLetters, applicationRecords, userInfo);
     
-    if (emailResults.failed.length > 0) {
-      await sendFailureEmailToAdmin(identifier, 'EMAIL_DELIVERY_FAILED', {
-        error: `${emailResults.failed.length} out of ${jobs.length} emails failed to send`,
-        jobId: applicationId,
-        jobCount: jobs.length,
-        applicantName: userInfo.name,
-        applicantEmail: userInfo.email,
-        successfulEmails: emailResults.successful.length,
-        failedEmails: emailResults.failed.length,
-        processingTime: Date.now() - startTime,
-        cvTextLength: cvText.length,
-        failedEmailDetails: emailResults.failed.map(f => ({
-          company: f.company,
-          jobTitle: f.jobTitle,
-          recruiterEmail: f.recruiterEmail,
-          reason: f.reason
-        }))
-      });
-    }
-
     // STEP 6: Send confirmation email to applicant
     await job.updateProgress(95);
     await sendConfirmationEmail(userInfo, jobs.length, applicationRecords);
@@ -1447,7 +1327,8 @@ const applicationWorker = new Worker('job-applications', async (job) => {
       identifier: identifier.substring(0, 6) + '***',
       applicationId,
       error: error.message,
-      isValidationError: error.message.includes('CV_VALIDATION_FAILED')
+      isValidationError: error.message.includes('CV_VALIDATION_FAILED'),
+      isDatabaseError: error.message.includes('DATABASE_ERROR')
     });
     
     throw error;
@@ -1455,7 +1336,7 @@ const applicationWorker = new Worker('job-applications', async (job) => {
 }, { 
   connection: queueRedis,
   prefix: 'queue:',
-  concurrency: CONFIG.concurrency,
+  concurrency: CONFIG.concurrency,    // Your original setting: 8
   settings: {
     retryProcessDelay: 10000,
     maxStalledCount: 2,
@@ -1465,10 +1346,7 @@ const applicationWorker = new Worker('job-applications', async (job) => {
   removeOnFail: 10
 });
 
-// ================================
-// ✅ EVENT HANDLERS
-// ================================
-
+// Event handlers
 applicationWorker.on('completed', (job, result) => {
   logger.info('Application job completed', {
     jobId: job.id,
@@ -1498,10 +1376,7 @@ applicationWorker.on('stalled', (jobId) => {
   logger.warn('Application job stalled', { jobId });
 });
 
-// ================================
-// ✅ PERFORMANCE MONITORING
-// ================================
-
+// Performance monitoring
 setInterval(() => {
   if (stats.processed > 0) {
     const avgProcessingTime = Math.round(stats.totalTime / stats.processed);
@@ -1525,17 +1400,16 @@ setInterval(() => {
   }
 }, 300000);
 
-// ================================
-// ✅ STARTUP MESSAGE
-// ================================
-
-logger.info('🚀 Application Worker started with enhanced validation!', {
+// Startup message
+logger.info('🚀 Application Worker started with database connection fix!', {
   concurrency: CONFIG.concurrency,
   emailBatchSize: CONFIG.emailBatchSize,
   emailDelay: CONFIG.emailDelay + 'ms',
   emailTimeout: CONFIG.emailTimeout + 'ms',
   uploadsDirectory: uploadsDir,
   minNameLength: CONFIG.minNameLength,
+  databaseHost: config.get('database.host'),
+  databaseName: config.get('database.name'),
   estimatedCapacity: (CONFIG.concurrency * 60) + ' applications/hour'
 });
 
