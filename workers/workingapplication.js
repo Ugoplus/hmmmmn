@@ -10,9 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
-const libre = require('libreoffice-convert');
-const util = require('util');
-const convertAsync = util.promisify(libre.convert);
+// Add this near the top with other requires
 
 
 // CRITICAL FIX: Initialize database connection for this worker process
@@ -33,14 +31,6 @@ const dbManager = require('../config/database');
     // Don't exit - let individual queries handle failures
   }
 })();
-async function convertDocxToPdf(docxPath) {
-  const ext = '.pdf';
-  const docxBuf = fs.readFileSync(docxPath);
-  const pdfBuf = await convertAsync(docxBuf, ext, undefined);
-  const pdfPath = docxPath.replace(/\.docx$/i, '.pdf');
-  fs.writeFileSync(pdfPath, pdfBuf);
-  return pdfPath;
-}
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../uploads');
@@ -116,9 +106,7 @@ let stats = {
   emailsSent: 0,
   emailsFailed: 0,
   rejectedCvs: 0
-
 };
-
 
 // CRITICAL FIX: Database query wrapper with connection validation
 async function executeQuery(query, params = []) {
@@ -236,26 +224,15 @@ async function processCVFromFile(file, identifier) {
         });
         cvText = pdfData.text || '';
       } else if (file.mimetype.includes('wordprocessingml') || file.mimetype.includes('document')) {
-  const result = await mammoth.extractRawText({ 
-    buffer: fileBuffer,
-    options: {
-      includeEmbeddedStyleMap: false,
-      includeDefaultStyleMap: false
-    }
-  });
-  cvText = result.value || '';
-
-  // 🔥 Convert DOCX to PDF so recruiter gets correct file
-  try {
-    const pdfPath = await convertDocxToPdf(file.filepath);
-    file.generatedPdfPath = pdfPath;  // attach PDF path for later use
-    logger.info('DOCX successfully converted to PDF', { pdfPath });
-  } catch (convertError) {
-    logger.error('DOCX to PDF conversion failed', { error: convertError.message });
-    throw new Error('Failed to generate recruiter PDF from DOCX');
-  }
-}
-
+        const result = await mammoth.extractRawText({ 
+          buffer: fileBuffer,
+          options: {
+            includeEmbeddedStyleMap: false,
+            includeDefaultStyleMap: false
+          }
+        });
+        cvText = result.value || '';
+      }
     } catch (extractError) {
       logger.error('Text extraction failed', { 
         identifier: identifier.substring(0, 6) + '***',
@@ -385,14 +362,17 @@ async function extractUserInfoWithAI(cvText, identifier) {
 }
 function extractUserInfoTraditional(cvText, identifier) {
   try {
-    const lines = cvText.split('\n').map(l => l.trim()).filter(Boolean); // ✅ define lines here
-    let extractedName = '';
+     let extractedName = '';
     
-    // STRATEGY 1: Look for name patterns anywhere in the document
+    // Look for name patterns anywhere in the document
     const namePatterns = [
+      // Look for "Cynthia Igbonai Bakare" pattern
       /([A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+)\s*Nationality:/i,
+      // Name before nationality
       /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\s*(?:Nationality|Date of birth|Gender):/i,
+      // Name in structured format
       /(?:Name|Full Name)[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})/i,
+      // Name at document start (original pattern)
       /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})/m
     ];
     
@@ -409,35 +389,39 @@ function extractUserInfoTraditional(cvText, identifier) {
     
     // STRATEGY 2: Check first non-header lines
     if (!extractedName) {
+      // Skip common headers and look for actual content
       let startIndex = 0;
       for (let i = 0; i < Math.min(10, lines.length); i++) {
         const line = lines[i].toLowerCase();
-        if (
-          line.includes('personal information') ||
-          line.includes('contact details') ||
-          line.includes('cv') ||
-          line.includes('resume')
-        ) {
+        if (line.includes('personal information') || 
+            line.includes('contact details') ||
+            line.includes('cv') || 
+            line.includes('resume')) {
           startIndex = i + 1;
           break;
         }
       }
-
+      
+      // Look at lines after headers
       for (let i = startIndex; i < Math.min(startIndex + 5, lines.length); i++) {
         const line = lines[i];
+        // Remove bullet points and clean
         const cleaned = line.replace(/^[•\-\*]\s*/, '').trim();
+        
+        // Check if this looks like a name
         const namePattern = /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})$/;
         const match = cleaned.match(namePattern);
-
+        
         if (match) {
           const candidate = match[1];
-          const excludeTerms = [
-            'Team Leadership', 'Team Leader', 'Project Manager',
-            'Skills', 'Experience', 'Education', 'Professional'
-          ];
-          const isExcluded = excludeTerms.some(term =>
+          // Exclude known non-names
+          const excludeTerms = ['Team Leadership', 'Team Leader', 'Project Manager', 
+                               'Skills', 'Experience', 'Education', 'Professional'];
+          
+          const isExcluded = excludeTerms.some(term => 
             candidate.toLowerCase().includes(term.toLowerCase())
           );
+          
           if (!isExcluded) {
             extractedName = candidate;
             break;
@@ -446,43 +430,44 @@ function extractUserInfoTraditional(cvText, identifier) {
       }
     }
     
-    // STRATEGY 3: Look near email addresses
+    // STRATEGY 3: Look near email addresses (names often appear right before email)
     if (!extractedName) {
       const emailPattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*\n[•\-\*]?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
       const match = cvText.match(emailPattern);
       if (match && match[1]) {
         const candidate = match[1].trim();
-        if (!candidate.toLowerCase().includes('team') && !candidate.toLowerCase().includes('leadership')) {
+        if (!candidate.toLowerCase().includes('team') && 
+            !candidate.toLowerCase().includes('leadership')) {
           extractedName = candidate;
         }
       }
     }
 
-    // Extract email
+    // Rest of your email and phone extraction code remains the same...
     const emailPattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
     const emailMatches = cvText.match(emailPattern);
     let extractedEmail = '';
+    
     if (emailMatches) {
       for (const email of emailMatches) {
-        if (
-          !email.includes('example.com') &&
-          !email.includes('domain.com') &&
-          !email.includes('email.com') &&
-          !email.includes('test.com') &&
-          !email.includes('smartcvnaija.com')
-        ) {
+        if (!email.includes('example.com') && 
+            !email.includes('domain.com') &&
+            !email.includes('email.com') &&
+            !email.includes('test.com') &&
+            !email.includes('smartcvnaija.com')) {
           extractedEmail = email;
           break;
         }
       }
     }
 
-    // Extract phone
+    // Phone extraction
     const phonePatterns = [
       /(?:\+234|234|0)[\d\s-]{10,14}/g,
       /(?:\+234|234)\s*\d{10}/g,
       /0\d{10}/g
     ];
+    
     let extractedPhone = '';
     for (const pattern of phonePatterns) {
       const phoneMatch = cvText.match(pattern);
@@ -507,9 +492,9 @@ function extractUserInfoTraditional(cvText, identifier) {
     };
 
   } catch (error) {
-    logger.error('User info extraction failed', {
+    logger.error('User info extraction failed', { 
       identifier: identifier.substring(0, 6) + '***',
-      error: error.message
+      error: error.message 
     });
     return {
       name: '',
@@ -518,7 +503,6 @@ function extractUserInfoTraditional(cvText, identifier) {
     };
   }
 }
-
 
 // Add these functions after your extractUserInfoTraditional function (around line 416)
 
@@ -1039,24 +1023,15 @@ async function sendSingleEmail(job, applicationRecord, coverLetters, userInfo, p
   }
 }
 
-async function sendConfirmationEmail(userInfo, jobCount, applicationRecords, coverLetters, pdfFilePath) {
-
-
+async function sendConfirmationEmail(userInfo, jobCount, applicationRecords) {
   try {
-   const confirmationEmailOptions = {
-  from: '"SmartCV Naija" <noreply@smartcvnaija.com.ng>',
-  to: userInfo.email,
-  subject: `Application Confirmation - ${jobCount} Jobs Applied Successfully`,
-  html: generateConfirmationEmailHTML(userInfo, jobCount, applicationRecords, coverLetters),
-  text: generateConfirmationEmailText(userInfo, jobCount, applicationRecords, coverLetters),
-  attachments: [
-    {
-      filename: `${userInfo.name.replace(/\s+/g, '_')}_CV.pdf`,
-      path: pdfFilePath, // same PDF recruiters received
-      contentType: 'application/pdf'
-    }
-  ]
-};
+    const confirmationEmailOptions = {
+      from: '"SmartCV Naija" <noreply@smartcvnaija.com.ng>',
+      to: userInfo.email,
+      subject: `Application Confirmation - ${jobCount} Jobs Applied Successfully`,
+      html: generateConfirmationEmailHTML(userInfo, jobCount, applicationRecords),
+      text: generateConfirmationEmailText(userInfo, jobCount, applicationRecords)
+    };
 
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -1249,7 +1224,7 @@ Application ID: ${applicationId}
 `;
 }
 
-function generateConfirmationEmailHTML(userInfo, jobCount, applicationRecords, coverLetters) {
+function generateConfirmationEmailHTML(userInfo, jobCount, applicationRecords) {
   const jobsList = applicationRecords.map(record => `
     <tr style="border-bottom: 1px solid #eee;">
       <td style="padding: 8px;">${record.jobTitle}</td>
@@ -1261,18 +1236,6 @@ function generateConfirmationEmailHTML(userInfo, jobCount, applicationRecords, c
       </td>
     </tr>
   `).join('');
-
-  const lettersList = applicationRecords.map(record => {
-    const letter = coverLetters[record.jobId] || coverLetters.default;
-    return `
-      <div style="margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; background: #fafafa;">
-        <h4 style="margin: 0 0 10px 0; color: #2c3e50;">
-          Cover Letter for ${record.jobTitle} at ${record.company}
-        </h4>
-        <pre style="white-space: pre-wrap; font-family: inherit; font-size: 0.95em;">${letter}</pre>
-      </div>
-    `;
-  }).join('');
 
   return `
 <!DOCTYPE html>
@@ -1365,9 +1328,6 @@ function generateConfirmationEmailHTML(userInfo, jobCount, applicationRecords, c
                 ${jobsList}
             </tbody>
         </table>
-
-        <h3>Your Cover Letters</h3>
-        ${lettersList}
         
         <div class="next-steps">
             <h3 style="margin-top: 0;">What happens next?</h3>
@@ -1397,21 +1357,10 @@ function generateConfirmationEmailHTML(userInfo, jobCount, applicationRecords, c
 </html>`;
 }
 
-
-function generateConfirmationEmailText(userInfo, jobCount, applicationRecords, coverLetters) {
+function generateConfirmationEmailText(userInfo, jobCount, applicationRecords) {
   const jobsList = applicationRecords.map(record => 
     `• ${record.jobTitle} at ${record.company} - ${record.status === 'submitted' ? 'Submitted' : 'Failed'}`
   ).join('\n');
-
-  const lettersList = applicationRecords.map(record => {
-    const letter = coverLetters[record.jobId] || coverLetters.default;
-    return `
---------------------------
-${record.jobTitle} at ${record.company}
---------------------------
-${letter}
-`;
-  }).join('\n\n');
 
   return `
 🎉 APPLICATION CONFIRMATION
@@ -1423,12 +1372,9 @@ Your applications have been successfully submitted to ${jobCount} companies.
 APPLICATION SUMMARY:
 ${jobsList}
 
-YOUR COVER LETTERS:
-${lettersList}
-
 WHAT HAPPENS NEXT?
 • Your applications have been sent directly to hiring managers
-• Companies typically respond within 5-10 business days
+• Companies typically respond within 5-10 business days  
 • Check your email regularly for responses
 • We recommend following up with companies after 1 week
 
@@ -1444,7 +1390,6 @@ This is an automated confirmation from SmartCVNaija.
 If you have questions, contact us at support@smartcvnaija.com.ng
 `;
 }
-
 // Add this function to your workers/application.js file:
 async function sendFailureEmailToAdmin(identifier, errorType, errorDetails) {
   try {
@@ -1701,7 +1646,7 @@ const applicationWorker = new Worker('job-applications', async (job) => {
 
     // STEP 1: Verify file exists on disk
     await job.updateProgress(10);
-    //const pdfFilePath = await verifyFileExists(file, identifier);
+    const pdfFilePath = await verifyFileExists(file, identifier);
     
     // STEP 2: Process and validate CV
     await job.updateProgress(30);
@@ -1719,14 +1664,14 @@ const applicationWorker = new Worker('job-applications', async (job) => {
     }
     
     const { cvText, userInfo } = cvData;
-    const pdfFilePath = file.generatedPdfPath || file.filepath;
-logger.info('CV validation successful', {
-  identifier: identifier.substring(0, 6) + '***',
-  applicantName: userInfo.name,
-  applicantEmail: userInfo.email,
-  cvTextLength: cvText.length,
-  pdfFilePath
-});
+    
+    logger.info('CV validation successful', {
+      identifier: identifier.substring(0, 6) + '***',
+      applicantName: userInfo.name,
+      applicantEmail: userInfo.email,
+      cvTextLength: cvText.length
+    });
+    
     // STEP 3: Generate cover letters
     await job.updateProgress(50);
     const coverLetters = await generateCoverLetters(cvText, jobs, userInfo);
@@ -1741,8 +1686,7 @@ logger.info('CV validation successful', {
     
     // STEP 6: Send confirmation email to applicant
     await job.updateProgress(95);
-    await sendConfirmationEmail(userInfo, jobs.length, applicationRecords, coverLetters, pdfFilePath);
-
+    await sendConfirmationEmail(userInfo, jobs.length, applicationRecords);
     
     // STEP 7: Cleanup
     await job.updateProgress(100);

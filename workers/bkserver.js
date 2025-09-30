@@ -30,7 +30,6 @@ const validator = require('validator');
 const xss = require('xss');
 const { body, validationResult } = require('express-validator');
 const nodemailer = require('nodemailer');
-console.log('Bot module loaded:', typeof bot.handleWhatsAppMessage); // Debug check
 // ✅ ENHANCED STARTUP SEQUENCE
 (async () => {
   try {
@@ -606,206 +605,72 @@ app.get('/api/jobs/stats', async (req, res) => {
 // WEBHOOK ENDPOINTS
 // ================================
 // Helper to process YCloud inbound messages
-// CORRECTED: YCloud Message Processing Function - Replace in server.js
-// CORRECTED: processYCloudMessage function for server.js
 async function processYCloudMessage(inboundMessage, logger) {
-  
   try {
     const phone = inboundMessage.from;
     const messageId = inboundMessage.id;
-    const messageType = inboundMessage.type;
 
-    logger.info('Processing YCloud inbound message', {
-      phone: phone.substring(0, 6) + '***',
-      messageType,
-      hasInteractive: !!inboundMessage.interactive,
-      interactiveType: inboundMessage.interactive?.type
-    });
+    // Text message body or interactive payload
+    const messageText = inboundMessage.text?.body || inboundMessage.interactive;
 
-    // Duplicate detection
-    const duplicateKey = `msg:${messageId}`;
-    const exists = await redis.exists(duplicateKey);
-    if (exists) {
-      logger.info('Duplicate YCloud message ignored', { messageId });
-      return;
-    }
-    await redis.set(duplicateKey, '1', 'EX', 3600);
-
-    let messageData = null;
-
-    if (messageType === 'text') {
-      // Text messages - pass the string
-      messageData = inboundMessage.text.body;
-      logger.info('Text message prepared', { 
-        phone: phone.substring(0, 6) + '***',
-        textLength: messageData.length 
-      });
-      
-    } else if (messageType === 'interactive') {
-      // 🎯 FIXED: Interactive messages - pass the object
-      messageData = {
-        type: 'interactive',
-        interactive: inboundMessage.interactive
-      };
-      
-    } else if (messageType === 'document') {
-  logger.info('Document message - processing with YCloud handler');
-  return await handleYCloudDocumentMessage(inboundMessage, logger);
-
-    } else {
-      logger.warn('Unknown message type', { messageType });
-      return await bot.handleWhatsAppMessage(phone, 'Hi! Send me a message or upload your CV.', null, messageId);
-    }
-
-    // 🎯 CRITICAL FIX: Always call bot.handleWhatsAppMessage for text AND interactive
-    logger.info('📢 Calling bot.handleWhatsAppMessage', {
-      phone: phone.substring(0, 6) + '***',
-      messageType: typeof messageData,
-      isInteractive: messageData?.type === 'interactive'
-    });
-
-    const result = await bot.handleWhatsAppMessage(phone, messageData, null, messageId);
-    
-    logger.info('✅ bot.handleWhatsAppMessage completed');
-    
-    return result;
+    // Pass to bot.js handler
+    return await bot.handleWhatsAppMessage(phone, messageText, null, messageId);
 
   } catch (err) {
-    logger.error('processYCloudMessage error', { 
-      error: err.message,
-      stack: err.stack
-    });
-    
-    try {
-      await bot.sendWhatsAppMessage(
-        inboundMessage.from, 
-        'Something went wrong. Please try again.',
-        { instant: true }
-      );
-    } catch (sendError) {
-      logger.error('Could not send error message', { error: sendError.message });
-    }
-    
+    logger.error('processYCloudMessage failed', { error: err.message });
     throw err;
   }
 }
+
 // ✅ YCLOUD WEBHOOK WITH ENHANCED ERROR HANDLING
-// In server.js, enhance the YCloud webhook handler:
 app.post('/webhook/ycloud', async (req, res) => {
   res.sendStatus(200);
-  
+
   try {
-    const { type, whatsappInboundMessage } = req.body;
-    
-    req.logger.info('🔥 YCloud webhook received', { 
-      type,
-      hasMessage: !!whatsappInboundMessage,
-      messageType: whatsappInboundMessage?.type,
-      interactiveType: whatsappInboundMessage?.interactive?.type
+    // 🔥 dump everything so we see the raw structure
+    logger.info('🔥 FULL YCloud webhook body', { body: JSON.stringify(req.body, null, 2) });
+
+    logger.info('YCloud webhook received', {
+      type: req.body?.type,
+      hasMessage: !!req.body?.whatsappInboundMessage
     });
 
+    const { type, whatsappInboundMessage } = req.body;
+
     if (type !== 'whatsapp.inbound_message.received') {
+      logger.info('YCloud: Non-message event, skipping', { type });
       return;
     }
 
     if (!whatsappInboundMessage) {
+      logger.warn('YCloud: No inbound message found');
       return;
     }
 
-    // Enhanced logging for interactive messages
-    if (whatsappInboundMessage.type === 'interactive') {
-      req.logger.info('🎯 Interactive message details', {
-        interactiveType: whatsappInboundMessage.interactive?.type,
-        listReplyId: whatsappInboundMessage.interactive?.list_reply?.id,
-        listReplyTitle: whatsappInboundMessage.interactive?.list_reply?.title,
-        buttonReplyId: whatsappInboundMessage.interactive?.button_reply?.id
+    const userPhone = whatsappInboundMessage.from;
+    const messageId = whatsappInboundMessage.id;
+
+    const messageLimit = await RateLimiter.checkLimit(userPhone, 'message');
+
+    if (!messageLimit.allowed) {
+      logger.warn('User message rate limited', {
+        phone: RateLimiter.maskIdentifier(userPhone),
+        remaining: messageLimit.remaining
       });
+
+      await ycloud.sendSmartMessage(userPhone, messageLimit.message, {
+        inboundMessageId: messageId,
+        messageType: 'instant_response'
+      });
+      return;
     }
 
     await processYCloudMessage(whatsappInboundMessage, req.logger);
-    
+
   } catch (error) {
-    req.logger.error('YCloud webhook error', { 
-      error: error.message,
-      stack: error.stack 
-    });
+    req.logger.error('YCloud webhook error', { error: error.message });
   }
 });
-
-
-// FIXED: Enhanced Document Processing
-async function handleYCloudDocumentMessage(message, logger) {
-  const { from, document, id: messageId } = message;
-  
-  try {
-    if (!document) {
-      await ycloud.sendSmartMessage(from, '⚠️ No document found in message.', {
-        inboundMessageId: messageId,
-        messageType: 'instant_response'
-      });
-      return;
-    }
-
-    // Validate file type
-    const allowedTypes = [
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/msword'
-    ];
-    
-    if (!allowedTypes.includes(document.mime_type)) {
-      await ycloud.sendSmartMessage(from,
-        `⚠️ Unsupported file type: ${document.mime_type}\n\n✅ Please send:\n• PDF files (.pdf)\n• Word documents (.docx)`,
-        {
-          inboundMessageId: messageId,
-          messageType: 'instant_response'
-        }
-      );
-      return;
-    }
-
-    // Show processing indicator
-    await ycloud.sendSmartMessage(from, '⏳ Downloading your CV...', {
-      inboundMessageId: messageId,
-      messageType: 'processing'
-    });
-
-    // Download document
-    const downloadResult = await ycloud.downloadDocument(document);
-    
-    // Validate downloaded file
-    ycloud.validateDocument(document, downloadResult.buffer);
-
-    logger.info('YCloud document downloaded successfully', {
-      from: from.substring(0, 6) + '***',
-      filename: downloadResult.filename,
-      size: downloadResult.size,
-      method: downloadResult.method
-    });
-
-    // Send to bot handler
-// FIXED:
-await bot.handleWhatsAppMessage(from, null, {
-  buffer: downloadResult.buffer,
-  originalname: downloadResult.filename || 'document.pdf',
-  mimetype: downloadResult.mimeType || document.mime_type
-}, messageId);
-
-  } catch (error) {
-    logger.error('YCloud document processing error', {
-      from: from.substring(0, 6) + '***',
-      error: error.message
-    });
-
-    await ycloud.sendSmartMessage(from,
-      '⚠️ Failed to process document. Please try again.',
-      {
-        inboundMessageId: messageId,
-        messageType: 'instant_response'
-      }
-    );
-  }
-}
 
 // Add this BEFORE your error handling middleware
 app.post('/webhook/paystack', (req, res) => {
@@ -921,7 +786,89 @@ app.post('/api/recruiter/post-job',
 
 
 // ✅ ENHANCED YCLOUD MESSAGE PROCESSING
+async function processYCloudMessage(message, logger) {
+  try {
+    const { from, type, id: messageId } = message;
+    
+    // Duplicate detection
+    const duplicateKey = `msg:${messageId}`;
+    const exists = await redis.exists(duplicateKey);
+    if (exists) {
+      logger.info('Duplicate YCloud message ignored', { messageId });
+      return;
+    }
+    
+    await redis.set(duplicateKey, '1', 'EX', 3600);
 
+    logger.info('Processing YCloud message', { type, from, messageId });
+
+    switch (type) {
+      case 'text':
+        const messageText = message.text?.body;
+        if (messageText) {
+          // ✅ Pass messageId for typing indicator
+          await bot.handleWhatsAppMessage(from, messageText, null, messageId);
+        }
+        break;
+        
+      case 'document':
+        await handleYCloudDocumentMessage(message, logger);
+        break;
+        
+      case 'image':
+        // ✅ Use smart messaging with typing
+        await ycloud.sendSmartMessage(from, 
+          '📄 Please send your CV as a document (PDF/DOCX), not an image.',
+          {
+            inboundMessageId: messageId,
+            messageType: 'instant_response'
+          }
+        );
+        break;
+        
+      case 'video':
+      case 'audio':
+        // ✅ Handle unsupported media with typing
+        await ycloud.sendSmartMessage(from,
+          '📄 I can only process PDF and DOCX files for job applications. Please upload your CV as a document.',
+          {
+            inboundMessageId: messageId,
+            messageType: 'instant_response'
+          }
+        );
+        break;
+        
+      default:
+        // ✅ Default response with typing
+        await ycloud.sendSmartMessage(from,
+          'Hi! I help you find jobs in Nigeria. Send me a message or upload your CV.',
+          {
+            inboundMessageId: messageId,
+            messageType: 'instant_response'
+          }
+        );
+    }
+
+  } catch (error) {
+    logger.error('YCloud message processing error', {
+      messageId: message.id,
+      error: error.message
+    });
+    
+    try {
+      // ✅ Error message with typing
+      await ycloud.sendSmartMessage(message.from, 
+        '⚠️ Sorry, something went wrong. Please try again.',
+        {
+          inboundMessageId: message.id,
+          messageType: 'instant_response'
+        }
+      );
+    } catch (sendError) {
+      logger.error('Failed to send error message', { sendError: sendError.message });
+    }
+  }
+}
 // ✅ DOCUMENT MESSAGE HANDLER
 async function handleYCloudDocumentMessage(message, logger) {
   const { from, document, id: messageId } = message;
@@ -1568,7 +1515,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'An internal server error occurred' });
 });
 
-app.use('/bumbum', (req, res, next) => {
+app.use((req, res) => {
   req.logger.warn('Route not found', { url: req.url, method: req.method });
   trackMetric('http.not_found', 1, [`method:${req.method}`]);
   res.status(404).json({ error: 'Route not found' });

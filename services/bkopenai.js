@@ -89,110 +89,226 @@ class AIService {
 
     // Keywords for better job detection
     this.jobKeywords = {
-      'developer': 'engineering_technical',
-      'programmer': 'engineering_technical', 
-      'software engineer': 'engineering_technical',
-      'frontend': 'engineering_technical',
-      'backend': 'engineering_technical',
-      'fullstack': 'engineering_technical',
-      'web developer': 'engineering_technical',
-      'mobile developer': 'engineering_technical',
-      'data scientist': 'engineering_technical',
-      'devops': 'engineering_technical',
-      'system administrator': 'engineering_technical',
-      
-      'sales rep': 'marketing_sales',
-      'sales representative': 'marketing_sales',
-      'marketer': 'marketing_sales',
-      'business development': 'marketing_sales',
-      'account manager': 'marketing_sales',
-      'digital marketer': 'marketing_sales',
-      'marketing manager': 'marketing_sales',
-      'sales manager': 'marketing_sales',
-      'brand manager': 'marketing_sales',
-      
-      'accountant': 'accounting_finance',
-      'finance': 'accounting_finance',
-      'bookkeeper': 'accounting_finance',
-      'financial analyst': 'accounting_finance',
-      'audit': 'accounting_finance',
-      'tax': 'accounting_finance',
-      'treasury': 'accounting_finance',
-      'budget analyst': 'accounting_finance',
-      
-      'admin': 'admin_office',
-      'administrator': 'admin_office',
-      'office assistant': 'admin_office',
-      'secretary': 'admin_office',
-      'receptionist': 'admin_office',
-      'data entry': 'admin_office',
-      'clerk': 'admin_office',
-      'coordinator': 'admin_office',
-      
-      'manager': 'management_executive',
-      'director': 'management_executive',
-      'supervisor': 'management_executive',
-      'team lead': 'management_executive',
-      'executive': 'management_executive',
-      'head of': 'management_executive',
-      'ceo': 'management_executive',
-      'operations manager': 'management_executive',
-      
-      'teacher': 'education_training',
-      'instructor': 'education_training',
-      'trainer': 'education_training',
-      'tutor': 'education_training',
-      'lecturer': 'education_training',
-      'professor': 'education_training',
-      'education': 'education_training',
-      
-      'nurse': 'healthcare_medical',
-      'doctor': 'healthcare_medical',
-      'physician': 'healthcare_medical',
-      'medical': 'healthcare_medical',
-      'healthcare': 'healthcare_medical',
-      'pharmacist': 'healthcare_medical',
-      'laboratory': 'healthcare_medical',
-      'clinical': 'healthcare_medical',
-      
-      'customer service': 'customer_service',
-      'customer support': 'customer_service',
-      'call center': 'customer_service',
-      'help desk': 'customer_service',
-      'client service': 'customer_service',
-      
-      'hr': 'human_resources',
-      'human resources': 'human_resources',
-      'recruiter': 'human_resources',
-      'talent': 'human_resources',
-      'payroll': 'human_resources',
-      'benefits': 'human_resources',
-      
-      'logistics': 'logistics_supply',
-      'supply chain': 'logistics_supply',
-      'warehouse': 'logistics_supply',
-      'procurement': 'logistics_supply',
-      'shipping': 'logistics_supply',
-      'inventory': 'logistics_supply',
-      
-      'security': 'security_safety',
-      'guard': 'security_safety',
-      'safety': 'security_safety',
-      'surveillance': 'security_safety',
-      
-      'driver': 'transport_driving',
-      'transport': 'transport_driving',
-      'delivery': 'transport_driving',
-      'courier': 'transport_driving',
-      
-      'engineer': 'engineering_technical',
-      'technician': 'engineering_technical',
-      'maintenance': 'engineering_technical',
-      'mechanical': 'engineering_technical',
-      'electrical': 'engineering_technical',
-      'civil': 'engineering_technical',
-      'chemical': 'engineering_technical',
-    };
+'lawyer': 'legal_compliance',
+'attorney': 'legal_compliance',
+'barrister': 'legal_compliance',
+'solicitor': 'legal_compliance',
+'paralegal': 'legal_compliance',
+'legal officer': 'legal_compliance',
+'legal manager': 'legal_compliance',
+'legal secretary': 'legal_compliance',
+'legal advisor': 'legal_compliance',
+'legal counsel': 'legal_compliance',
+'compliance officer': 'legal_compliance',
+'compliance': 'legal_compliance',
+'legal': 'legal_compliance',
+
+// ADMIN & OFFICE - ENHANCED (Secretary/Receptionist missing)
+'secretary': 'admin_office',
+'legal secretary': 'admin_office',
+'receptionist': 'admin_office',
+'front desk': 'admin_office',
+'front desk executive': 'admin_office',
+'front office executive': 'admin_office',
+'admin officer': 'admin_office',
+'administrative officer': 'admin_office',
+'administrative assistant': 'admin_office',
+'admin assistant': 'admin_office',
+'office assistant': 'admin_office',
+'executive assistant': 'admin_office',
+'personal assistant': 'admin_office',
+'clerical assistant': 'admin_office',
+'clerical': 'admin_office',
+'data entry': 'admin_office',
+'data entry assistant': 'admin_office',
+'office manager': 'admin_office',
+
+// MEDIA & CREATIVE - ENHANCED
+'graphic designer': 'media_creative',
+'graphics designer': 'media_creative',
+'web designer': 'media_creative',
+'designer': 'media_creative',
+'content creator': 'media_creative',
+'content writer': 'media_creative',
+'content manager': 'media_creative',
+'content': 'media_creative',
+'social media manager': 'media_creative',
+'social media handler': 'media_creative',
+'social media': 'media_creative',
+'video editor': 'media_creative',
+'video producer': 'media_creative',
+'videographer': 'media_creative',
+'photographer': 'media_creative',
+'photography': 'media_creative',
+'journalist': 'media_creative',
+'creative director': 'media_creative',
+'creative': 'media_creative',
+'brand manager': 'media_creative',
+'digital marketing': 'media_creative',
+
+// CONSTRUCTION & REAL ESTATE - ENHANCED (Foreman missing)
+'foreman': 'construction_real_estate',
+'site foreman': 'construction_real_estate',
+'construction foreman': 'construction_real_estate',
+'construction supervisor': 'construction_real_estate',
+'site supervisor': 'construction_real_estate',
+'construction manager': 'construction_real_estate',
+'site manager': 'construction_real_estate',
+'project manager construction': 'construction_real_estate',
+'civil engineer': 'construction_real_estate',
+'structural engineer': 'construction_real_estate',
+'quantity surveyor': 'construction_real_estate',
+'architect': 'construction_real_estate',
+'construction': 'construction_real_estate',
+'real estate': 'construction_real_estate',
+'property manager': 'construction_real_estate',
+'realtor': 'construction_real_estate',
+'estate agent': 'construction_real_estate',
+
+// HEALTHCARE & MEDICAL - ENHANCED
+'medical officer': 'healthcare_medical',
+'medical doctor': 'healthcare_medical',
+'medical laboratory scientist': 'healthcare_medical',
+'medical laboratory technician': 'healthcare_medical',
+'laboratory scientist': 'healthcare_medical',
+'laboratory technician': 'healthcare_medical',
+'medical physicist': 'healthcare_medical',
+'radiation therapist': 'healthcare_medical',
+'radiation oncologist': 'healthcare_medical',
+'oncology officer': 'healthcare_medical',
+'radiographer': 'healthcare_medical',
+'microbiologist': 'healthcare_medical',
+'chemist': 'healthcare_medical',
+'food technologist': 'healthcare_medical',
+'production pharmacist': 'healthcare_medical',
+'clinical administrator': 'healthcare_medical',
+'nursing manager': 'healthcare_medical',
+'industrial nurse': 'healthcare_medical',
+'epi nurse': 'healthcare_medical',
+'registered nurse': 'healthcare_medical',
+'nurse midwife': 'healthcare_medical',
+'caregiver': 'healthcare_medical',
+'health promoter': 'healthcare_medical',
+'health officer': 'healthcare_medical',
+'medical receptionist': 'healthcare_medical',
+'medical data processor': 'healthcare_medical',
+
+// LOGISTICS & SUPPLY CHAIN - ENHANCED
+'store officer': 'logistics_supply',
+'store manager': 'logistics_supply',
+'store assistant': 'logistics_supply',
+'storekeeper': 'logistics_supply',
+'warehouse manager': 'logistics_supply',
+'warehouse assistant': 'logistics_supply',
+'warehouse clerk': 'logistics_supply',
+'warehouse incharge': 'logistics_supply',
+'purchasing officer': 'logistics_supply',
+'purchasing manager': 'logistics_supply',
+'purchase manager': 'logistics_supply',
+'procurement officer': 'logistics_supply',
+'procurement manager': 'logistics_supply',
+'logistics officer': 'logistics_supply',
+'logistics supervisor': 'logistics_supply',
+'transport officer': 'logistics_supply',
+'transport supervisor': 'logistics_supply',
+'supply chain': 'logistics_supply',
+'inventory': 'logistics_supply',
+
+// MANUFACTURING & PRODUCTION - ENHANCED  
+'production manager': 'manufacturing_production',
+'production superintendent': 'manufacturing_production',
+'quality control': 'manufacturing_production',
+'quality assurance': 'manufacturing_production',
+'quality assurance manager': 'manufacturing_production',
+'lab analyst': 'manufacturing_production',
+'technical operator': 'manufacturing_production',
+'factory accountant': 'manufacturing_production',
+'feed miller': 'manufacturing_production',
+'forklift operator': 'manufacturing_production',
+'mechanical technician': 'manufacturing_production',
+'maintenance technician': 'manufacturing_production',
+'maintenance officer': 'manufacturing_production',
+'maintenance manager': 'manufacturing_production',
+'maintenance planner': 'manufacturing_production',
+
+// EDUCATION & TRAINING - ENHANCED
+'montessori teacher': 'education_training',
+'french teacher': 'education_training',
+'music teacher': 'education_training',
+'biology teacher': 'education_training',
+'english teacher': 'education_training',
+'technical training instructor': 'education_training',
+'yoga instructor': 'education_training',
+'coach': 'education_training',
+
+// TRANSPORT & DRIVING - ENHANCED
+'mini truck driver': 'transport_driving',
+'pool car driver': 'transport_driving',
+'baggage handler': 'transport_driving',
+'crew scheduling officer': 'transport_driving',
+
+// SECURITY & SAFETY - ENHANCED
+'hse officer': 'security_safety',
+'health safety environment': 'security_safety',
+'environment health safety': 'security_safety',
+'safety security health': 'security_safety',
+'hse coordinator': 'security_safety',
+'hse graduate trainee': 'security_safety',
+'safety coordinator': 'security_safety',
+'security coordinator': 'security_safety',
+'ehs officer': 'security_safety',
+'mine safety officer': 'security_safety',
+
+// CUSTOMER SERVICE - ENHANCED
+'customer service executive': 'customer_service',
+'customer sales executive': 'customer_service',
+'customer care officer': 'customer_service',
+'call center agent': 'customer_service',
+'customer service representative': 'customer_service',
+
+// HUMAN RESOURCES - ENHANCED
+'human resource manager': 'human_resources',
+'human resource officer': 'human_resources',
+'hr manager': 'human_resources',
+'hr officer': 'human_resources',
+'hr admin manager': 'human_resources',
+'hr associates': 'human_resources',
+'hr business partner': 'human_resources',
+'hrbp': 'human_resources',
+'human resources intern': 'human_resources',
+'diversity recruiter': 'human_resources',
+'payroll specialist': 'human_resources',
+
+// BANKING & FINANCE - ENHANCED
+'teller': 'accounting_finance',
+'banker': 'accounting_finance',
+'relationship manager': 'accounting_finance',
+'key account manager': 'accounting_finance',
+'account officer': 'accounting_finance',
+'accounts clerk': 'accounting_finance',
+'accounts payable': 'accounting_finance',
+'accounts receivable': 'accounting_finance',
+'chartered accountant': 'accounting_finance',
+'management accountant': 'accounting_finance',
+'trainee accountant': 'accounting_finance',
+'factory accountant': 'accounting_finance',
+'finance accounts manager': 'accounting_finance',
+'financial controller': 'accounting_finance',
+'budget analyst': 'accounting_finance',
+'tax assistant': 'accounting_finance',
+'internal control officer': 'accounting_finance',
+
+// SPECIALIZED ROLES
+'agronomist': 'other_general',
+'field enumerator': 'other_general', 
+'data enumerator': 'other_general',
+'research assistant': 'other_general',
+'documentary researcher': 'other_general',
+'nanny': 'other_general',
+'sous chef': 'other_general',
+'pastor': 'other_general',
+'volunteer': 'other_general',
+};
     
     // Your existing jobTypes object (keep for database searches)
     this.jobTypes = {
@@ -751,140 +867,345 @@ class AIService {
 🎯 **Simple Process:** Search → Pay → Select → Upload → Apply!`;
   }
 
-  // All other existing methods remain unchanged (analyzeCV, generateCoverLetter, etc.)...
-  async analyzeCV(cvText, jobTitle = null, identifier = null) {
-    try {
-      const job = await openaiQueue.add(
-        'analyze-cv',
-        { cvText, jobTitle, userId: identifier },
-        { jobId: `cv-${identifier}-${Date.now()}` }
-      );
+  async generateCoverLetter(cvText, jobTitle = null, companyName = null, applicantName = null, identifier = null) {
+      const startTime = Date.now();
       
       try {
-        const result = await job.waitUntilFinished(queueEvents, 15000);
-        return this.validateCVAnalysis(result) || this.getFallbackAnalysis(cvText, jobTitle);
+        const job = await openaiQueue.add(
+          'generate-cover-letter',
+          { 
+            cvText, 
+            jobTitle, 
+            companyName, 
+            applicantName: applicantName || '[Your Name]',
+            userId: identifier 
+          },
+          { 
+            jobId: `cover-${identifier || 'anon'}-${Date.now()}`,
+            attempts: 1,
+            ttl: 15000,
+            removeOnFail: true,
+            removeOnComplete: true
+          }
+        );
+        
+        try {
+          // FIXED: Updated timeout to 65000
+          const result = await job.waitUntilFinished(queueEvents, 65000);
+          const duration = Date.now() - startTime;
+          
+          // FIXED: Lowered validation threshold from 100 to 50 characters
+          if (typeof result === 'string' && result.length > 50) {
+            logger.info('Cover letter generated via AI', {
+              identifier: identifier?.substring(0, 6) + '***',
+              duration: `${duration}ms`,
+              letterLength: result.length,
+              source: 'AI'
+            });
+            return result;
+          }
+          
+          if (result?.content && result.content.length > 50) {
+            logger.info('Cover letter generated via AI (nested)', {
+              identifier: identifier?.substring(0, 6) + '***',
+              duration: `${duration}ms`,
+              letterLength: result.content.length,
+              source: 'AI'
+            });
+            return result.content;
+          }
+          
+          throw new Error('AI returned insufficient content');
+          
+        } catch (waitError) {
+          const duration = Date.now() - startTime;
+          logger.warn('Cover letter generation timeout - using fallback', {
+            identifier: identifier?.substring(0, 6) + '***',
+            duration: `${duration}ms`,
+            error: waitError.message,
+            source: 'Fallback'
+          });
+          
+          try {
+            await job.remove();
+          } catch (cleanupError) {
+            // Ignore cleanup errors
+          }
+          
+          return this.getEnhancedFallbackCoverLetter(cvText, jobTitle, companyName, applicantName);
+        }
+        
       } catch (error) {
-        logger.warn('CV analysis timeout', { identifier });
-        return this.getFallbackAnalysis(cvText, jobTitle);
+        const duration = Date.now() - startTime;
+        logger.error('Cover letter generation failed completely', {
+          identifier: identifier?.substring(0, 6) + '***',
+          duration: `${duration}ms`,
+          error: error.message,
+          source: 'Fallback'
+        });
+        
+        return this.getEnhancedFallbackCoverLetter(cvText, jobTitle, companyName, applicantName);
       }
-    } catch (error) {
-      logger.error('CV analysis error', { error: error.message });
-      return this.getFallbackAnalysis(cvText, jobTitle);
     }
-  }
-
-  validateCVAnalysis(result) {
-    if (!result || typeof result !== 'object') return null;
-    
-    if (result.content && typeof result.content === 'object') {
-      result = result.content;
-    }
-    
-    const requiredFields = [
-      'overall_score', 'job_match_score', 'skills_score',
-      'experience_score', 'education_score', 'experience_years'
-    ];
-    
-    for (const field of requiredFields) {
-      if (!(field in result)) return null;
-    }
-    
-    return result;
-  }
-
-  async generateCoverLetter(cvText, jobTitle = null, companyName = null, identifier = null) {
+  async extractUserInfo(cvText, identifier) {
     try {
       const job = await openaiQueue.add(
-        'generate-cover-letter',
-        { cvText, jobTitle, companyName, userId: identifier },
-        { jobId: `cover-${identifier}-${Date.now()}` }
+        'extract-user-info',
+        { 
+          cvText, 
+          identifier 
+        },
+        { 
+          jobId: `extract-${identifier || 'anon'}-${Date.now()}`,
+          attempts: 2,
+          ttl: 30000,
+          removeOnFail: true,
+          removeOnComplete: true
+        }
       );
       
-      try {
-        const result = await job.waitUntilFinished(queueEvents, 10000);
-        
-        if (result?.content && result.content.length > 50) {
-          return result.content;
-        }
-        if (typeof result === 'string' && result.length > 50) {
-          return result;
-        }
-        
-        return this.getFallbackCoverLetter(jobTitle, companyName);
-      } catch (error) {
-        logger.warn('Cover letter generation timeout', { identifier });
-        return this.getFallbackCoverLetter(jobTitle, companyName);
+      const result = await job.waitUntilFinished(queueEvents, 35000);
+      
+      if (result && result.name) {
+        logger.info('User info extracted via AI', {
+          identifier: identifier?.substring(0, 6) + '***',
+          name: result.name,
+          source: 'AI'
+        });
+        return result;
       }
+      
+      throw new Error('AI extraction returned invalid result');
+      
     } catch (error) {
-      logger.error('Cover letter generation error', { error: error.message });
-      return this.getFallbackCoverLetter(jobTitle, companyName);
+      logger.error('AI user info extraction failed in service', {
+        identifier: identifier?.substring(0, 6) + '***',
+        error: error.message
+      });
+      throw error;
     }
   }
-
-  getFallbackAnalysis(cvText, jobTitle = null) {
-    const text = (cvText || '').toLowerCase();
-    let overallScore = 50;
-    let jobMatchScore = 50;
-
-    if (text.includes('experience')) overallScore += 15;
-    if (text.includes('education')) overallScore += 10;
-    if (text.includes('skill')) overallScore += 10;
-
-    if (jobTitle && text.includes(jobTitle.toLowerCase())) {
-      jobMatchScore += 20;
+  
+  // FIXED: Added all missing validation methods
+  cleanAndValidateName(name) {
+    if (!name || typeof name !== 'string') return '';
+  
+    const cleaned = name
+        .replace(/[^\w\s\-'.]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      if (cleaned.length >= 4 && cleaned.length <= 50) {
+        const words = cleaned.split(' ').filter(word => word.length > 1);
+        
+        if (words.length >= 2) {
+          const badWords = ['experience', 'team', 'leadership', 'skills', 'cv', 'resume', 'information'];
+          const hasBadWords = words.some(word => 
+            badWords.includes(word.toLowerCase())
+          );
+          
+          if (!hasBadWords) {
+            return cleaned;
+          }
+        }
+      }
+      
+      return '';
     }
-    
-    return {
-      overall_score: Math.min(Math.max(overallScore, 0), 100),
-      job_match_score: Math.min(Math.max(jobMatchScore, 0), 100),
-      skills_score: 60,
-      experience_score: 50,
-      education_score: 60,
-      experience_years: 2,
-      key_skills: ['Communication', 'Teamwork', 'Problem Solving'],
-      relevant_skills: ['Professional Experience', 'Leadership'],
-      education_level: 'Bachelor\'s',
-      summary: 'Professional with relevant experience',
-      strengths: ['Strong educational background', 'Good communication'],
-      areas_for_improvement: ['More certifications', 'Industry experience'],
-      recommendation: 'Good',
-      cv_quality: 'Good',
-      personalized_message: 'Great potential for the Nigerian job market!'
-    };
+  
+    cleanAndValidateEmail(email) {
+      if (!email || typeof email !== 'string') return '';
+      
+      const cleaned = email.trim().toLowerCase();
+      const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+      
+      if (emailRegex.test(cleaned)) {
+        const badDomains = ['example.com', 'test.com', 'smartcvnaija.com'];
+        const domain = cleaned.split('@')[1];
+        
+        if (!badDomains.includes(domain)) {
+          return cleaned;
+        }
+      }
+      
+      return '';
+    }
+  
+    cleanAndValidatePhone(phone, identifier) {
+      if (!phone || typeof phone !== 'string') return identifier;
+      
+      const cleaned = phone.replace(/[^\d+]/g, '');
+      const patterns = [
+        /^(\+234|234)\d{10}$/,
+        /^0\d{10}$/
+      ];
+      
+      if (patterns.some(pattern => pattern.test(cleaned))) {
+        return cleaned;
+      }
+      
+      return identifier;
+    }
+  
+    // Enhanced fallback methods from your original code
+    getEnhancedFallbackCoverLetter(cvText, jobTitle, companyName, applicantName = '[Your Name]') {
+      try {
+        const cvInfo = this.extractBasicCVInfo(cvText || '');
+        const jobSpecific = this.getJobSpecificContent(jobTitle, cvInfo);
+        
+        return `Dear Hiring Manager,
+  
+  I am writing to express my strong interest in the ${jobTitle || 'position'} at ${companyName || 'your company'}. ${jobSpecific.opening}
+  
+  ${cvInfo.experienceText} ${jobSpecific.skills} ${cvInfo.skillsText}
+  
+  I would welcome the opportunity to discuss how my background can contribute to your team's success. Thank you for considering my application, and I look forward to hearing from you.
+  
+  Best regards,
+  ${applicantName}`;
+      } catch (error) {
+        logger.error('Enhanced fallback failed, using basic template', { error: error.message });
+        return this.getFallbackCoverLetter(jobTitle, companyName, applicantName);
+      }
+    }
+  
+    extractBasicCVInfo(cvText) {
+      const text = cvText.toLowerCase();
+      
+      let education = '';
+      if (text.includes('bachelor') || text.includes('bsc') || text.includes('b.sc')) {
+        education = 'bachelor\'s degree';
+      } else if (text.includes('master') || text.includes('msc') || text.includes('m.sc')) {
+        education = 'master\'s degree';
+      } else if (text.includes('hnd') || text.includes('diploma')) {
+        education = 'diploma';
+      } else if (text.includes('university') || text.includes('college')) {
+        education = 'university education';
+      }
+  
+      let yearsExp = '';
+      const yearMatches = text.match(/(\d+)\s*years?\s*(of\s*)?(experience|exp)/);
+      if (yearMatches) {
+        yearsExp = `${yearMatches[1]} years of experience`;
+      } else if (text.includes('experienced') || text.includes('experience')) {
+        yearsExp = 'relevant experience';
+      }
+  
+      const skills = [];
+      const skillKeywords = ['excel', 'microsoft office', 'accounting software', 'quickbooks', 'sap', 'sql', 'javascript', 'python', 'photoshop', 'autocad', 'project management'];
+      skillKeywords.forEach(skill => {
+        if (text.includes(skill)) {
+          skills.push(skill);
+        }
+      });
+  
+      let experienceText = '';
+      if (education && yearsExp) {
+        experienceText = `With my ${education} and ${yearsExp}, I am well-positioned for this role.`;
+      } else if (education) {
+        experienceText = `My ${education} has provided me with a strong foundation for this position.`;
+      } else if (yearsExp) {
+        experienceText = `My ${yearsExp} has prepared me well for this opportunity.`;
+      } else {
+        experienceText = 'My professional background has equipped me with relevant skills for this position.';
+      }
+  
+      let skillsText = '';
+      if (skills.length > 0) {
+        const skillsList = skills.slice(0, 3).join(', ');
+        skillsText = `My proficiency in ${skillsList} aligns well with your requirements.`;
+      }
+  
+      return {
+        education,
+        yearsExp,
+        skills,
+        experienceText,
+        skillsText
+      };
+    }
+  
+    getJobSpecificContent(jobTitle, cvInfo) {
+      const title = (jobTitle || '').toLowerCase();
+      
+      if (title.includes('account') || title.includes('finance')) {
+        return {
+          opening: `My background in accounting and financial management, combined with ${cvInfo.experienceText ? 'my professional experience' : 'my educational foundation'}, makes me well-suited for this role.`,
+          skills: 'My understanding of financial processes and attention to detail position me well for this accounting role.'
+        };
+      } else if (title.includes('developer') || title.includes('software') || title.includes('it')) {
+        return {
+          opening: 'My technical background and passion for technology make me an ideal candidate for this development position.',
+          skills: 'My programming knowledge and problem-solving abilities align with your technical requirements.'
+        };
+      } else if (title.includes('marketing') || title.includes('sales')) {
+        return {
+          opening: 'My experience in client relations and understanding of market dynamics prepare me well for this marketing role.',
+          skills: 'My communication skills and market awareness make me a strong candidate for your sales team.'
+        };
+      } else if (title.includes('manager') || title.includes('supervisor')) {
+        return {
+          opening: 'My leadership capabilities and management experience make me well-qualified for this supervisory position.',
+          skills: 'My ability to coordinate teams and manage projects effectively suits your management requirements.'
+        };
+      }
+      
+      return {
+        opening: `My professional background and ${cvInfo.education || 'educational foundation'} make me a qualified candidate for this role.`,
+        skills: 'My relevant skills and dedication to excellence position me well for this opportunity.'
+      };
+    }
+  
+    getFallbackCoverLetter(jobTitle = null, companyName = null, applicantName = '[Your Name]') {
+      return `Dear Hiring Manager,
+  
+  I am writing to express my strong interest in the ${jobTitle || 'position'} at ${companyName || 'your company'}.
+  
+  My background and experience make me a qualified candidate for this role in Nigeria's competitive market. I have developed strong skills that align with your requirements and am confident in my ability to contribute to your team.
+  
+  I would welcome the opportunity to discuss how my experience can benefit your organization. Thank you for considering my application.
+  
+  Best regards,
+  ${applicantName}`;
+    }
+  
+    getRandomSearchPhrase(jobType, location) {
+      const phrase = this.searchPhrases[Math.floor(Math.random() * this.searchPhrases.length)];
+      return phrase.replace('{jobType}', jobType).replace('{location}', location);
+    }
+   logMetrics() {
+      try {
+        logger.info('AIService metrics', {
+          cacheSize: this.queryCache.size,
+          cacheHits: this.metrics.cacheHits,
+          patternMatches: this.metrics.patternMatches,
+          aiCalls: this.metrics.aiCalls,
+          totalRequests: this.metrics.totalRequests,
+          cacheHitRate: this.metrics.totalRequests > 0 
+            ? ((this.metrics.cacheHits / this.metrics.totalRequests) * 100).toFixed(2) + '%'
+            : '0%',
+          aiCallRate: this.metrics.totalRequests > 0 
+            ? ((this.metrics.aiCalls / this.metrics.totalRequests) * 100).toFixed(2) + '%'
+            : '0%'
+        });
+      } catch (error) {
+        logger.error('Failed to log metrics', { error: error.message });
+      }
+    }
+    // NEW: Method to clear session data for testing
+    async clearSessionData(identifier) {
+      if (identifier) {
+        try {
+          await sessionRedis.del(`session:${identifier}`);
+          logger.info('Session data cleared', { identifier });
+          return true;
+        } catch (error) {
+          logger.error('Failed to clear session data', { identifier, error: error.message });
+          return false;
+        }
+      }
+      return false;
+    }
   }
-
-  getFallbackCoverLetter(jobTitle = null, companyName = null) {
-    return `Dear Hiring Manager,
-
-I am writing to express my strong interest in the ${jobTitle || 'position'} at ${companyName || 'your company'}.
-
-My background and experience make me a qualified candidate for this role in Nigeria's competitive market. I have developed strong skills that align with your requirements and am confident in my ability to contribute to your team.
-
-I would welcome the opportunity to discuss how my experience can benefit your organization. Thank you for considering my application.
-
-Best regards,
-[Your Name]`;
-  }
-
-  logMetrics() {
-    const total = this.metrics.totalRequests;
-    if (total === 0) return;
-
-    const cacheHitRate = Math.round((this.metrics.cacheHits / total) * 100);
-    const patternRate = Math.round((this.metrics.patternMatches / total) * 100);
-    const aiRate = Math.round((this.metrics.aiCalls / total) * 100);
-
-    logger.info('Performance metrics', {
-      totalRequests: total,
-      cacheHitRate: `${cacheHitRate}%`,
-      patternMatchRate: `${patternRate}%`,
-      aiCallRate: `${aiRate}%`,
-      cacheSize: this.queryCache.size
-    });
-
-    // Reset metrics
-    this.metrics = { cacheHits: 0, patternMatches: 0, aiCalls: 0, totalRequests: 0 };
-  }
-}
-
-module.exports = new AIService();
+  
+  module.exports = new AIService();

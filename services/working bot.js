@@ -124,21 +124,24 @@ class CleanTeaseThenPayBot {
 // In bot.js - Add this COMPLETE replacement for handleWhatsAppMessage:
 // FIXED: Interactive message handler in handleWhatsAppMessage
 async handleWhatsAppMessage(phone, message, file = null, inboundMessageId = null) {
-   
+  console.log('🎯 handleWhatsAppMessage CALLED - COMPLETE VERSION');
+  console.log('Message type:', typeof message);
+  console.log('Message value:', message);
+  
   try {
     // 1. FIRST - Handle interactive messages (CRITICAL FIX)
     if (message && typeof message === 'object' && message.type === 'interactive') {
-
+      console.log('🎯🎯🎯 INTERACTIVE MESSAGE DETECTED');
+      console.log('Interactive data:', JSON.stringify(message.interactive, null, 2));
+      
 if (message.interactive && message.interactive.type === 'list_reply' && message.interactive.list_reply) {
         const listReply = message.interactive.list_reply;
-        if (listReply.id.startsWith('cat_')) {
-          return await this.handleInteractiveMenuSelection(phone, listReply.id, { inboundMessageId });
-        }
-
+        console.log('List reply detected - ID:', listReply.id, 'Title:', listReply.title);
+        
         // Handle job application
         if (listReply.id.startsWith('job_')) {
           const jobNumber = parseInt(listReply.id.replace('job_', ''));
-         
+          console.log('Applying to job number:', jobNumber);
           
           // Get jobs from Redis
           const lastJobsStr = await redis.get(`last_jobs:${normalizePhone(phone)}`);
@@ -215,6 +218,7 @@ if (message.interactive && message.interactive.type === 'list_reply' && message.
     // 3. Handle text messages
     if (typeof message === 'string') {
       const text = message.trim();
+      console.log('Text message received:', text);
       
       // Convert to lowercase for matching
       const lowerText = text.toLowerCase();
@@ -230,13 +234,14 @@ if (message.interactive && message.interactive.type === 'list_reply' && message.
       ];
       
       if (showJobsPatterns.some(pattern => pattern.test(text))) {
+        console.log('Show jobs command matched');
         return await this.showFullJobsAfterPaymentWithInteractive(phone);
       }
 
       // Menu command
-    if (lowerText.includes('menu') || lowerText.includes('categories')) {
-  return await this.showJobCategoriesMenuInteractive(phone);
-}
+      if (lowerText.includes('menu') || lowerText.includes('categories')) {
+        return await this.showJobCategoriesMenu(phone);
+      }
 
       // Status command
       if (lowerText.includes('status')) {
@@ -452,109 +457,7 @@ isPaginationCommand(message) {
            text.match(/^page\s+\d+$/i) ||
            text === '>' || text === '<';
   }
-// ================================
-// INTERACTIVE CATEGORIES MENU SYSTEM
-// ================================
-// ================================
-// SIMPLIFIED INTERACTIVE CATEGORIES MENU ONLY
-// ================================
 
-async showJobCategoriesMenuInteractive(phone) {
-  try {
-    const sections = [{
-      title: "Job Categories",
-      rows: [
-        { id: "cat_1", title: "IT & Software Development", description: "Developers, programmers, engineers" },
-        { id: "cat_2", title: "Accounting & Finance", description: "Accountants, finance, banking" },
-        { id: "cat_3", title: "Sales & Marketing", description: "Sales, marketing, business dev" },
-        { id: "cat_4", title: "Healthcare & Medical", description: "Medical, nursing, healthcare" },
-        { id: "cat_5", title: "Engineering & Technical", description: "Technical engineering roles" },
-        { id: "cat_6", title: "Education & Training", description: "Teaching, training, education" },
-        { id: "cat_7", title: "Administration & Office", description: "Admin, office, clerical" },
-        { id: "cat_8", title: "Management & Executive", description: "Management, leadership" },
-        { id: "cat_9", title: "Human Resources", description: "HR, recruitment, talent" },
-        { id: "cat_10", title: "Customer Service", description: "Support, call center" }
-      ]
-    }];
-
-    await ycloud.sendInteractiveListMessage(
-      phone,
-      "Job Categories (1-10)",
-      "Choose a category:",
-      sections,
-      "Select Category"
-    );
-
-    // Send second message with remaining categories
-    setTimeout(async () => {
-      const sections2 = [{
-        title: "More Categories",
-        rows: [
-          { id: "cat_11", title: "Legal & Compliance", description: "Legal, law, compliance" },
-          { id: "cat_12", title: "Media & Creative", description: "Design, media, creative" },
-          { id: "cat_13", title: "Logistics & Supply Chain", description: "Logistics, warehouse" },
-          { id: "cat_14", title: "Security & Safety", description: "Security, safety" },
-          { id: "cat_15", title: "Construction & Real Estate", description: "Construction, real estate" },
-          { id: "cat_16", title: "Manufacturing & Production", description: "Manufacturing, production" },
-          { id: "cat_17", title: "Transport & Driving", description: "Driving, delivery" },
-          { id: "cat_18", title: "Retail & Fashion", description: "Retail, sales, fashion" },
-          { id: "cat_19", title: "General Jobs", description: "Other opportunities" }
-        ]
-      }];
-
-      await ycloud.sendInteractiveListMessage(
-        phone,
-        "Job Categories (11-19)",
-        "Or choose from these categories:",
-        sections2,
-        "Select Category"
-      );
-    }, 1000);
-
-    return true;
-  } catch (error) {
-    logger.error('Interactive categories menu failed', { phone, error: error.message });
-    return this.showJobCategoriesMenu(phone); // Fallback to text menu
-  }
-}
-
-async handleInteractiveMenuSelection(phone, selectionId, context = {}) {
-  try {
-    logger.info('Interactive menu selection', { phone: phone.substring(0, 6) + '***', selectionId });
-
-    // Handle category selections (cat_1, cat_2, etc.)
-    if (selectionId.startsWith('cat_')) {
-      const categoryNumber = parseInt(selectionId.replace('cat_', ''));
-      const categoryInfo = this.categoryMapping[categoryNumber];
-      
-      if (!categoryInfo) {
-        return this.sendWhatsAppMessage(phone, 'Invalid category selection.', { instant: true });
-      }
-
-      // Store the selected category and ask for location via TEXT (like your existing flow)
-      await redis.set(`selected_category:${normalizePhone(phone)}`, JSON.stringify(categoryInfo), 'EX', 3600);
-      await redis.set(`state:${normalizePhone(phone)}`, 'waiting_for_location', 'EX', 3600);
-
-      const locationText = `You selected: **${categoryInfo.label}** ✅\n\n`;
-      const locationPrompt = `📍 **Where do you want to work?**\n\n`;
-      const examples = `Choose from:\n`;
-      const locations = `• Lagos\n• Abuja\n• Port Harcourt\n• Kano\n• Ibadan\n• Remote\n• Any other Nigerian state\n\n`;
-      const instruction = `Just reply with your preferred location! 🎯`;
-
-      return this.sendWhatsAppMessage(phone, 
-        locationText + locationPrompt + examples + locations + instruction,
-        { instant: true }
-      );
-    }
-
-    // Fallback
-    return this.sendWhatsAppMessage(phone, 'Invalid selection. Please try again.', { instant: true });
-
-  } catch (error) {
-    logger.error('Interactive menu selection failed', { phone, error: error.message });
-    return this.sendWhatsAppMessage(phone, 'Selection failed. Please try again.', { instant: true });
-  }
-}
   async handlePaginationNavigation(phone, message, context = {}) {
     try {
       const text = message.toLowerCase().trim();
@@ -606,7 +509,7 @@ async handleInteractiveMenuSelection(phone, selectionId, context = {}) {
   // ================================
 async displayJobPageWithInteractive(phone, allJobs, page = 1, context = {}) {
   try {
-    const jobsPerPage = 8;
+    const jobsPerPage = 8; // CHANGED: From 5 to 8
     const startIndex = (page - 1) * jobsPerPage;
     const endIndex = startIndex + jobsPerPage;
     const pageJobs = allJobs.slice(startIndex, endIndex);
@@ -617,10 +520,39 @@ async displayJobPageWithInteractive(phone, allJobs, page = 1, context = {}) {
     await redis.set(`last_jobs:${normalizePhone(phone)}`, JSON.stringify(pageJobs), 'EX', 3600);
     await redis.set(`paginated_jobs:${normalizePhone(phone)}`, JSON.stringify(allJobs), 'EX', 3600);
 
-    // 1. FIRST - Send interactive buttons at the top
+    // 1. Send detailed job listing first
+    let jobDetailsText = `📋 **Jobs - Page ${page} of ${totalPages}** (${allJobs.length} total)\n\n`;
+    
+    pageJobs.forEach((job, index) => {
+      const jobNumber = index + 1; // Use 1-8 for display
+      jobDetailsText += this.formatJobDisplay(job, jobNumber);
+    });
+
+    // Add text navigation instructions
+    if (totalPages > 1) {
+      jobDetailsText += `📄 **Navigation:**\n`;
+      if (page > 1) {
+        jobDetailsText += `⬅️ "prev" for previous page\n`;
+      }
+      if (page < totalPages) {
+        jobDetailsText += `➡️ "next" for next page\n`;
+      }
+      jobDetailsText += `🔢 "page X" to jump to page X\n\n`;
+    }
+
+    jobDetailsText += `💡 **Quick Actions:**\n`;
+    jobDetailsText += `• Click buttons below to apply\n`;
+    jobDetailsText += `• Type "details 1" for full job info\n`;
+    jobDetailsText += `• Type "apply 1,2,3" to select multiple jobs`;
+
+    await this.sendWhatsAppMessage(phone, jobDetailsText, { instant: true });
+
+    // 2. Send interactive buttons - Apply only for all 8 jobs
     try {
       const jobRows = pageJobs.map((job, i) => {
         const jobNumber = i + 1;
+        
+        // Truncate for WhatsApp limits
         const truncatedTitle = job.title.length > 20 ? job.title.substring(0, 17) + '...' : job.title;
         const truncatedCompany = job.company.length > 25 ? job.company.substring(0, 22) + '...' : job.company;
         
@@ -636,7 +568,7 @@ async displayJobPageWithInteractive(phone, allJobs, page = 1, context = {}) {
         rows: jobRows
       }];
 
-      // Add navigation if there are multiple pages
+      // Add navigation only if there are multiple pages
       if (totalPages > 1) {
         const navRows = [];
         
@@ -657,13 +589,14 @@ async displayJobPageWithInteractive(phone, allJobs, page = 1, context = {}) {
         }
 
         if (navRows.length > 0) {
-          sections.unshift({ // Add navigation at the TOP
+          sections.push({
             title: "Navigate",
             rows: navRows
           });
         }
       }
 
+      // Send interactive list
       await ycloud.sendInteractiveListMessage(
         phone,
         "Job Actions",
@@ -672,28 +605,20 @@ async displayJobPageWithInteractive(phone, allJobs, page = 1, context = {}) {
         "Choose Action"
       );
 
+      logger.info('Interactive job display completed', {
+        phone: phone.substring(0, 6) + '***',
+        page,
+        jobsShown: pageJobs.length,
+        totalJobs: allJobs.length,
+        interactiveRowsCreated: jobRows.length
+      });
+
     } catch (interactiveError) {
-      logger.warn('Interactive buttons failed', {
+      logger.warn('Interactive buttons failed, but text display succeeded', {
         phone: phone.substring(0, 6) + '***',
         error: interactiveError.message
       });
     }
-
-    // 2. THEN - Send detailed job listing below
-    let jobDetailsText = `📋 **Jobs - Page ${page} of ${totalPages}** (${allJobs.length} total)\n\n`;
-    
-    pageJobs.forEach((job, index) => {
-      const jobNumber = index + 1;
-      jobDetailsText += this.formatJobDisplay(job, jobNumber);
-    });
-
-
-     jobDetailsText += `💡 **Quick Actions:**\n`;
-     jobDetailsText += `• Use interactive buttons above to apply\n`;
-     jobDetailsText += `• Type "details" + job number (e.g. "details 3") for full info\n`;
-     jobDetailsText += `• Type "apply 1,2,3" to select multiple jobs`;
-
-    await this.sendWhatsAppMessage(phone, jobDetailsText, { instant: true });
 
     return true;
 
@@ -782,6 +707,8 @@ async displayJobPage(phone, allJobs, page, context = {}) {
       }
     }
     
+    jobText += `   💬 Reply: "apply ${jobNumber}" to apply\n`;
+    jobText += `   📋 Reply: "details ${jobNumber}" for full info\n\n`;
     
     return jobText;
   }
@@ -2086,175 +2013,163 @@ async handleInteractivePageNavigation(phone, targetPage, context = {}) {
   // ================================
   // AI PROCESSING & PATTERNS
   // ================================
-async handleWithAI(phone, message, sessionContext = {}) {
-  try {
-    const startTime = Date.now();
-    
-    // Use the parseJobQuery from bkopenai.js (openaiService)
-    const intent = await openaiService.parseJobQuery(message, phone, {
-      platform: 'whatsapp',
-      timestamp: Date.now(),
-      sessionData: sessionContext
-    });
-    logger.info('Intent parsed using bkopenai.js logic', { 
-      duration: Date.now() - startTime, 
-      action: intent.action,
-      jobType: intent?.filters?.title,
-      rawTitle: intent?.filters?.rawTitle,
-      friendlyLabel: intent?.filters?.friendlyLabel
-    });
+  async handleWithAI(phone, message, sessionContext = {}) {
+    try {
+      const startTime = Date.now();
+      
+      const intent = await openaiService.parseJobQuery(message, phone, {
+        platform: 'whatsapp',
+        timestamp: Date.now(),
+        sessionData: sessionContext
+      });
+      logger.info('Intent parsed using bkopenai.js logic', { 
+        duration: Date.now() - startTime, 
+        action: intent.action,
+        jobType: intent?.filters?.title,
+        rawTitle: intent?.filters?.rawTitle,
+        friendlyLabel: intent?.filters?.friendlyLabel
+      });
 
-    // CRITICAL: Update session BEFORE sending response
-    await this.updateSessionContext(phone, message, intent, sessionContext);
-    logger.info('Session updated', { 
-      phone: phone.substring(0, 6) + '***',
-      action: intent.action,
-      pendingJobType: intent?.filters?.updateSession?.pendingJobType 
-    });
+      await this.updateSessionContext(phone, message, intent, sessionContext);
+      logger.info('Session updated', { 
+        phone: phone.substring(0, 6) + '***',
+        action: intent.action,
+        pendingJobType: intent?.filters?.updateSession?.pendingJobType 
+      });
 
-    if (intent.action === 'greeting' || intent.action === 'clarify' || intent.action === 'help') {
-      const sendStart = Date.now();
-      await this.sendWhatsAppMessage(phone, intent.response, { instant: true });
-      logger.info('Response sent', { duration: Date.now() - sendStart, action: intent.action });
-      return true;
+      if (intent.action === 'greeting' || intent.action === 'clarify' || intent.action === 'help') {
+        const sendStart = Date.now();
+        await this.sendWhatsAppMessage(phone, intent.response, { instant: true });
+        logger.info('Response sent', { duration: Date.now() - sendStart, action: intent.action });
+        return true;
+      }
+
+      const result = await this.processIntent(phone, intent, message, sessionContext);
+      
+      return result;
+
+    } catch (error) {
+      logger.error('AI processing error', { phone, error: error.message });
+      return this.handleSimplePatterns(phone, message, sessionContext);
     }
-
-    const result = await this.processIntent(phone, intent, message, sessionContext);
-    
-    return result;
-
-  } catch (error) {
-    logger.error('AI processing error', { phone, error: error.message });
-    return this.handleSimplePatterns(phone, message, sessionContext);
   }
-}
 
-async updateSessionContext(phone, message, intent, currentContext) {
-  try {
-    const updatedContext = { ...currentContext };
-    
-    // CRITICAL: Handle updateSession data from openai service FIRST
-    if (intent?.filters?.updateSession) {
-      logger.info('Applying session updates from bkopenai.js', {
-        phone: phone.substring(0, 6) + '***',
-        updates: intent.filters.updateSession,
-        before: {
-          pendingJobType: currentContext.pendingJobType,
-          lastJobType: currentContext.lastJobType
+  async updateSessionContext(phone, message, intent, currentContext) {
+    try {
+      const updatedContext = { ...currentContext };
+      
+      if (intent?.filters?.updateSession) {
+        logger.info('Applying session updates from bkopenai.js', {
+          phone: phone.substring(0, 6) + '***',
+          updates: intent.filters.updateSession,
+          before: {
+            pendingJobType: currentContext.pendingJobType,
+            lastJobType: currentContext.lastJobType
+          }
+        });
+        
+        Object.assign(updatedContext, intent.filters.updateSession);
+        
+        logger.info('Session updates applied from bkopenai.js', {
+          phone: phone.substring(0, 6) + '***',
+          after: {
+            pendingJobType: updatedContext.pendingJobType,
+            lastJobType: updatedContext.lastJobType
+          }
+        });
+      }
+      
+      const currentState = await redis.get(`state:${normalizePhone(phone)}`);
+      
+      if (currentState === 'waiting_for_location') {
+        logger.info('Preserving job context while waiting for location', {
+          phone: phone.substring(0, 6) + '***',
+          currentState: currentState,
+          preservedJobType: updatedContext.pendingJobType || updatedContext.lastJobType
+        });
+      } else {
+        if (intent?.filters?.title) {
+          updatedContext.lastJobType = intent.filters.title;
         }
-      });
-      
-      Object.assign(updatedContext, intent.filters.updateSession);
-      
-      logger.info('Session updates applied from bkopenai.js', {
-        phone: phone.substring(0, 6) + '***',
-        after: {
-          pendingJobType: updatedContext.pendingJobType,
-          lastJobType: updatedContext.lastJobType
+        
+        if (intent?.filters?.location) {
+          updatedContext.lastLocation = intent.filters.location;
         }
-      });
-    }
-    
-    // IMPORTANT FIX: Don't overwrite session data when in specific states
-    const currentState = await redis.get(`state:${normalizePhone(phone)}`);
-    
-    if (currentState === 'waiting_for_location') {
-      // Don't update job type when waiting for location input
-      logger.info('Preserving job context while waiting for location', {
-        phone: phone.substring(0, 6) + '***',
-        currentState: currentState,
-        preservedJobType: updatedContext.pendingJobType || updatedContext.lastJobType
-      });
-    } else {
-      // Normal session updates
-      if (intent?.filters?.title) {
-        updatedContext.lastJobType = intent.filters.title;
+
+        if (intent?.filters?.rawTitle) {
+          updatedContext.lastRawTitle = intent.filters.rawTitle;
+        }
+
+        if (intent?.filters?.friendlyLabel) {
+          updatedContext.lastFriendlyLabel = intent.filters.friendlyLabel;
+        }
       }
       
-      if (intent?.filters?.location) {
-        updatedContext.lastLocation = intent.filters.location;
+      updatedContext.lastMessage = message;
+      updatedContext.lastAction = intent?.action || 'unknown';
+      updatedContext.timestamp = Date.now();
+      updatedContext.interactionCount = (updatedContext.interactionCount || 0) + 1;
+      updatedContext.lastInteraction = Date.now();
+      
+      const saveSuccess = await saveSessionContext(phone, updatedContext);
+      
+      if (!saveSuccess) {
+        logger.error('Session save failed!', {
+          phone: phone.substring(0, 6) + '***',
+          action: intent?.action,
+          pendingJobType: updatedContext.pendingJobType
+        });
       }
-
-      if (intent?.filters?.rawTitle) {
-        updatedContext.lastRawTitle = intent.filters.rawTitle;
-      }
-
-      if (intent?.filters?.friendlyLabel) {
-        updatedContext.lastFriendlyLabel = intent.filters.friendlyLabel;
-      }
-    }
-    
-    updatedContext.lastMessage = message;
-    updatedContext.lastAction = intent?.action || 'unknown';
-    updatedContext.timestamp = Date.now();
-    updatedContext.interactionCount = (updatedContext.interactionCount || 0) + 1;
-    
-    // IMPORTANT: Always update lastInteraction for session validation
-    updatedContext.lastInteraction = Date.now();
-    
-    // Save and verify the save was successful
-    const saveSuccess = await saveSessionContext(phone, updatedContext);
-    
-    if (!saveSuccess) {
-      logger.error('Session save failed!', {
+      
+      return saveSuccess;
+      
+    } catch (error) {
+      logger.error('Failed to update session context', { 
         phone: phone.substring(0, 6) + '***',
-        action: intent?.action,
-        pendingJobType: updatedContext.pendingJobType
+        error: error.message 
       });
+      return false;
     }
-    
-    return saveSuccess;
-    
-  } catch (error) {
-    logger.error('Failed to update session context', { 
-      phone: phone.substring(0, 6) + '***',
-      error: error.message 
-    });
-    return false;
   }
-}
 
-async processIntent(phone, intent, originalMessage, sessionContext = {}) {
-  try {
-    switch (intent?.action) {
-      case 'search_jobs':
-        if (intent.filters && (intent.filters.title || intent.filters.location || intent.filters.remote)) {
-          const filters = { ...intent.filters };
-          
-          if (!filters.title && sessionContext.lastJobType) {
-            filters.title = sessionContext.lastJobType;
-            filters.rawTitle = sessionContext.lastRawTitle || sessionContext.lastJobType;
-            filters.friendlyLabel = sessionContext.lastFriendlyLabel || sessionContext.lastJobType;
-            logger.info('Completed query with session job type', { phone, jobType: filters.title });
-          }
-          
-          if (!filters.location && sessionContext.lastLocation) {
-            filters.location = sessionContext.lastLocation;
-            logger.info('Completed query with session location', { phone, location: filters.location });
-          }
+  async processIntent(phone, intent, originalMessage, sessionContext = {}) {
+    try {
+      switch (intent?.action) {
+        case 'search_jobs':
+          if (intent.filters && (intent.filters.title || intent.filters.location || intent.filters.remote)) {
+            const filters = { ...intent.filters };
+            
+            if (!filters.title && sessionContext.lastJobType) {
+              filters.title = sessionContext.lastJobType;
+              filters.rawTitle = sessionContext.lastRawTitle || sessionContext.lastJobType;
+              filters.friendlyLabel = sessionContext.lastFriendlyLabel || sessionContext.lastJobType;
+              logger.info('Completed query with session job type', { phone, jobType: filters.title });
+            }
+            
+            if (!filters.location && sessionContext.lastLocation) {
+              filters.location = sessionContext.lastLocation;
+              logger.info('Completed query with session location', { phone, location: filters.location });
+            }
 
-          if (filters.title) {
-            await redis.set(`lastJobType:${normalizePhone(phone)}`, filters.title, 'EX', 3600);
-          }
-          if (filters.location) {
-            await redis.set(`lastLocation:${normalizePhone(phone)}`, filters.location, 'EX', 3600);
-          }
+            if (filters.title) {
+              await redis.set(`lastJobType:${normalizePhone(phone)}`, filters.title, 'EX', 3600);
+            }
+            if (filters.location) {
+              await redis.set(`lastLocation:${normalizePhone(phone)}`, filters.location, 'EX', 3600);
+            }
 
-          // Use the correct display title using bkopenai.js logic
-          const displayTitle = this.getCorrectJobDisplayTitle(filters);
-          const responseMessage = intent.response || `Searching for ${displayTitle}...`;
-          
-          await this.sendWhatsAppMessage(phone, responseMessage, { instant: true });
-          return await this.searchJobs(phone, filters);
-        }
-        return this.sendWhatsAppMessage(phone, 
-          'What type of jobs are you looking for?\n\nTry: "developer jobs in Lagos" or "remote marketing jobs"\n\nOr type "menu" to browse categories',
-          { instant: true }
-        );
+            const displayTitle = this.getCorrectJobDisplayTitle(filters);
+            const responseMessage = intent.response || `Searching for ${displayTitle}...`;
+            
+            await this.sendWhatsAppMessage(phone, responseMessage, { instant: true });
+            return await this.searchJobs(phone, filters);
+          }
+          return this.sendWhatsAppMessage(phone, 
+            'What type of jobs are you looking for?\n\nTry: "developer jobs in Lagos" or "remote marketing jobs"\n\nOr type "menu" to browse categories',
+            { instant: true }
+          );
 
-      case 'clarify':
-        try {
-          // persist any freshly-detected bits to Redis (keep existing behaviour)
+        case 'clarify':
           if (intent.filters?.title) {
             await redis.set(`lastJobType:${normalizePhone(phone)}`, intent.filters.title, 'EX', 3600);
             logger.info('Clarify: Stored job type to Redis', {
@@ -2281,30 +2196,6 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             sessionPendingLocation: sessionContext?.pendingLocation || null
           });
 
-          // NEW FIX: Handle when BOTH job and location are detected in current message
-          if (intent.filters?.title && intent.filters?.location) {
-            logger.info('Clarify: Both job and location detected in single message - searching immediately', {
-              phone: phone.substring(0, 6) + '***',
-              detectedJob: intent.filters.title,
-              detectedLocation: intent.filters.location,
-              rawTitle: intent.filters.rawTitle,
-              friendlyLabel: intent.filters.friendlyLabel
-            });
-
-            const filters = {
-              title: intent.filters.title,
-              rawTitle: intent.filters.rawTitle || intent.filters.title,
-              friendlyLabel: intent.filters.friendlyLabel || intent.filters.title,
-              location: intent.filters.location,
-              remote: intent.filters.location.toLowerCase() === 'remote'
-            };
-
-            const displayTitle = this.getCorrectJobDisplayTitle(filters);
-            await this.sendWhatsAppMessage(phone, `Searching for ${displayTitle} in ${filters.location}...`, { instant: true });
-            return await this.searchJobs(phone, filters);
-          }
-
-          // STEP 1: user gave a job but no location -> save pendingJobType and ask for location
           if (intent.filters?.title && !intent.filters?.location) {
             logger.info('Clarify Step 1: Job detected, no location - saving to pending', {
               phone: phone.substring(0, 6) + '***',
@@ -2317,12 +2208,12 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             sessionContext.pendingRawTitle = intent.filters.rawTitle;
             sessionContext.pendingFriendlyLabel = intent.filters.friendlyLabel;
             
-            return this.sendWhatsAppMessage(phone, `What location for ${intent.filters.friendlyLabel || intent.filters.title}? Try: Lagos, Abuja, or Remote`,
+            return this.sendWhatsAppMessage(phone, 
+              `What location for ${intent.filters.friendlyLabel || intent.filters.title}? Try: Lagos, Abuja, or Remote`,
               { instant: true }
             );
           }
 
-          // STEP 2: user gave a location but no job -> save pendingLocation and ask for job
           if (intent.filters?.location && !intent.filters?.title) {
             logger.info('Clarify Step 2: Location detected, no job - saving to pending', {
               phone: phone.substring(0, 6) + '***',
@@ -2338,7 +2229,6 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             );
           }
 
-          // STEP 3: if we have a pending piece and the user supplied the missing one -> combine & search
           const hasPendingJob = !!sessionContext.pendingJobType;
           const hasPendingLocation = !!sessionContext.pendingLocation;
           
@@ -2347,104 +2237,64 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             hasPendingJob: hasPendingJob,
             hasPendingLocation: hasPendingLocation,
             pendingJobType: sessionContext.pendingJobType,
-            pendingLocation: sessionContext.pendingLocation,
-            intentLocation: intent.filters?.location,
-            intentJobTitle: intent.filters?.title
+            pendingLocation: sessionContext.pendingLocation
           });
-          
-          if ((intent.filters?.location && hasPendingJob) || (intent.filters?.title && hasPendingLocation)) {
-            const jobType = intent.filters?.title || sessionContext.pendingJobType;
-            const jobLocation = intent.filters?.location || sessionContext.pendingLocation;
-            const rawTitle = intent.filters?.rawTitle || sessionContext.pendingRawTitle || jobType;
-            const friendlyLabel = intent.filters?.friendlyLabel || sessionContext.pendingFriendlyLabel || jobType;
 
-            logger.info('Clarify Step 3: Combining pending + current', { 
-              phone: phone.substring(0, 6) + '***',
-              finalJobType: jobType, 
-              finalLocation: jobLocation,
-              finalRawTitle: rawTitle,
-              finalFriendlyLabel: friendlyLabel,
-              source: intent.filters?.location && hasPendingJob ? 'pending_job + new_location' : 'pending_location + new_job'
-            });
-
-            // clear pending after use
-            sessionContext.pendingJobType = null;
-            sessionContext.pendingLocation = null;
-            sessionContext.pendingRawTitle = null;
-            sessionContext.pendingFriendlyLabel = null;
-
+          if (hasPendingJob && hasPendingLocation) {
             const filters = {
-              title: jobType,
-              rawTitle: rawTitle,
-              friendlyLabel: friendlyLabel,
-              location: jobLocation,
-              remote: jobLocation.toLowerCase() === 'remote'
+              title: sessionContext.pendingJobType,
+              rawTitle: sessionContext.pendingRawTitle || sessionContext.pendingJobType,
+              friendlyLabel: sessionContext.pendingFriendlyLabel || sessionContext.pendingJobType,
+              location: sessionContext.pendingLocation
             };
-
-            const displayTitle = this.getCorrectJobDisplayTitle(filters);
-            await this.sendWhatsAppMessage(phone, `Searching ${displayTitle} in ${filters.location}...`, { instant: true });
+            
+            logger.info('Clarify Step 4: Combining pending job and location for search', {
+              phone: phone.substring(0, 6) + '***',
+              jobType: filters.title,
+              location: filters.location
+            });
+            
+            await clearSessionContext(phone);
+            await this.sendWhatsAppMessage(phone, 
+              `Searching for ${filters.friendlyLabel || filters.title} in ${filters.location}...`,
+              { instant: true }
+            );
             return await this.searchJobs(phone, filters);
           }
 
-          // STEP 4: normal fallback (no pending, no combinable data)
-          logger.info('Clarify Step 4: Using fallback reply', { 
-            phone: phone.substring(0, 6) + '***',
-            response: intent.response 
+          return this.sendWhatsAppMessage(phone, 
+            intent.response || 'Please provide more details about the job or location.',
+            { instant: true }
+          );
+
+        case 'show_jobs':
+          return await this.showFullJobsAfterPaymentWithInteractive(phone);
+
+        case 'status':
+          return await this.handleStatusRequest(phone);
+
+        case 'show_menu':
+          return await this.showJobCategoriesMenu(phone);
+
+        default:
+          logger.info('Falling back to simple patterns for unhandled intent', { 
+            phone: phone.substring(0, 6) + '***', 
+            action: intent.action 
           });
-          return this.sendWhatsAppMessage(phone, intent.response, { instant: true });
-
-        } catch (err) {
-          logger.error('Clarify handler error', { phone: phone.substring(0, 6) + '***', error: err.message });
-          return this.sendWhatsAppMessage(phone, intent.response, { instant: true });
-        }
-
-      case 'search_location':
-        // Handle location-only detection - redirect to clarify logic
-        logger.info('Redirecting search_location to clarify handler', { 
-          phone: phone.substring(0, 6) + '***',
-          originalAction: 'search_location' 
-        });
-        
-        // Change the action to clarify and reprocess
-        intent.action = 'clarify';
-        return await this.processIntent(phone, intent, originalMessage, sessionContext);
-
-      case 'show_jobs':
-        return await this.showFullJobsAfterPaymentWithInteractive(phone);
-
-      case 'status':
-        return await this.handleStatusRequest(phone);
-
-      case 'show_menu':
-        return await this.showJobCategoriesMenuInteractive(phone);
-
-      case 'apply_job':
-        await redis.set(`state:${normalizePhone(phone)}`, 'selecting_jobs', 'EX', 3600);
-        return await this.handleJobSelection(phone, originalMessage);
-
-      case 'help':
-        return this.sendWhatsAppMessage(phone, this.getHelpMessage());
-
-      default:
-        logger.info('Falling back to simple patterns for unhandled intent', { 
-          phone: phone.substring(0, 6) + '***', 
-          action: intent.action 
-        });
-        const simpleResponse = this.handleSimplePatterns(phone, originalMessage, sessionContext);
-        if (simpleResponse) {
-          return simpleResponse;
-        }
-        
-        const response = intent.response || 
-          'I\'m here to help! Try:\n• "Find developer jobs in Lagos"\n• "menu" to browse categories\n• "status" to check your applications';
-        return this.sendWhatsAppMessage(phone, response, { instant: true });
+          const simpleResponse = this.handleSimplePatterns(phone, originalMessage, sessionContext);
+          if (simpleResponse) {
+            return simpleResponse;
+          }
+          
+          const response = intent.response || 
+            'I’m here to help! Try:\n• "Find developer jobs in Lagos"\n• "menu" to browse categories\n• "status" to check your applications';
+          return this.sendWhatsAppMessage(phone, response, { instant: true });
+      }
+    } catch (error) {
+      logger.error('Intent processing error', { phone, error: error.message });
+      return this.sendWhatsAppMessage(phone, 'Something went wrong. Please try again.', { instant: true });
     }
-  } catch (error) {
-    logger.error('Intent processing error', { phone, error: error.message });
-    return this.sendWhatsAppMessage(phone, 'Something went wrong. Please try again.', { instant: true });
   }
-}
-
 
   handleSimplePatterns(phone, message, sessionContext) {
     const text = message.toLowerCase().trim();
@@ -2484,24 +2334,6 @@ async initiateDailyPayment(identifier) {
   
   return paystackService.initializePayment(identifier, reference, email);
 }
-
-  async deductApplications(identifier, count) {
-    const result = await dbManager.query(`
-      UPDATE daily_usage 
-      SET 
-        applications_remaining = applications_remaining - $1,
-        total_applications_today = total_applications_today + $1,
-        updated_at = NOW()
-      WHERE user_identifier = $2 AND applications_remaining >= $1
-      RETURNING applications_remaining, total_applications_today
-    `, [count, identifier]);
-
-    if (result.rows.length === 0) {
-      throw new Error('Insufficient applications remaining');
-    }
-
-    return result.rows[0];
-  }
 
 async checkDailyUsage(identifier) {
     const { rows: [usage] } = await dbManager.query(`
@@ -2580,182 +2412,75 @@ async checkDailyUsage(identifier) {
   // ================================
   async handleInstantFileUpload(phone, file, context = {}) {
     try {
-      const selectedJobs = await redis.get(`selected_jobs:${normalizePhone(phone)}`);
+      const uploadId = uuidv4();
+      const normalizedPhone = normalizePhone(phone);
       
-      if (!selectedJobs) {
-        return this.sendWhatsAppMessage(phone,
-          'First select jobs to apply to!\n\nSearch for jobs:\n• "Find developer jobs in Lagos"\n• Select jobs to apply to\n• Then upload CV for applications!\n\nOr type "menu" to browse categories',
-          { instant: true }
-        );
-      }
-
       const usage = await this.checkDailyUsage(phone);
-      if (usage.needsPayment) {
+      if (usage.needsPayment || usage.expired) {
         const paymentUrl = await this.initiateDailyPayment(phone);
-       return this.sendWhatsAppMessage(phone, 
-  `Complete Payment First\n\nPay ₦300 for:\n✅ 3 professional applications\n✅ AI-generated cover letters\n✅ Direct recruiter contact\n\n${paymentUrl}\n\nAfter payment, just upload CV - we handle the rest!`,
-  { instant: true }
-);
+        return this.sendWhatsAppMessage(phone,
+          `💳 Payment required to upload CV\n\nPay ₦300 for premium service:\n${paymentUrl}`,
+          { instant: true }
+        );
       }
       
-      if (file.buffer.length > 5 * 1024 * 1024) {
-        return this.sendWhatsAppMessage(phone, 
-          'File too large (max 5MB).',
+      if (usage.remaining === 0) {
+        return this.sendWhatsAppMessage(phone,
+          'You’ve reached your daily application limit. Try again tomorrow or upgrade your plan.',
           { instant: true }
         );
       }
 
-      let jobs = [];
-      try {
-        jobs = JSON.parse(selectedJobs);
-      } catch (e) {
-        return this.sendWhatsAppMessage(phone, 
-          'Please select jobs again and then upload CV.',
+      const selectedJobsStr = await redis.get(`selected_jobs:${normalizedPhone}`);
+      let selectedJobs = selectedJobsStr ? JSON.parse(selectedJobsStr) : [];
+      
+      if (selectedJobs.length === 0) {
+        const lastJobsStr = await redis.get(`last_jobs:${normalizedPhone}`);
+        if (lastJobsStr) {
+          selectedJobs = JSON.parse(lastJobsStr).slice(0, usage.remaining);
+          await redis.set(`selected_jobs:${normalizedPhone}`, JSON.stringify(selectedJobs), 'EX', 3600);
+        }
+      }
+      
+      if (selectedJobs.length === 0) {
+        return this.sendWhatsAppMessage(phone,
+          'No jobs selected. Please select jobs first:\n• "show jobs"\n• "menu" to browse categories',
           { instant: true }
         );
       }
 
-      const savedFile = await this.saveFileToUploads(phone, file);
-      if (!savedFile) {
-        return this.sendWhatsAppMessage(phone, 
-          'Failed to save CV. Please try again.',
-          { instant: true }
-        );
-      }
+      const jobIds = selectedJobs.map(job => job.id).join(',');
+      await this.sendWhatsAppMessage(phone, 
+        `📄 Processing your CV for ${selectedJobs.length} job(s)...`,
+        { instant: true }
+      );
 
-      await this.sendInstantApplicationConfirmationWithCommunity(phone, jobs, context);
-      
-      await this.queueSmartApplicationProcessing(phone, savedFile, jobs);
-      
-      await redis.del(`selected_jobs:${normalizePhone(phone)}`);
-      await this.deductApplications(phone, jobs.length);
+      const job = await cvQueue.add('process-cv', {
+        phone: normalizedPhone,
+        file,
+        jobIds,
+        uploadId,
+        timestamp: Date.now()
+      });
+
+      await cvBackgroundQueue.add('extract-cv-data', {
+        uploadId,
+        phone: normalizedPhone,
+        file,
+        jobIds
+      });
 
       return true;
 
     } catch (error) {
-      logger.error('Instant file upload error', { phone, error: error.message });
+      logger.error('File upload error', { phone, error: error.message });
       return this.sendWhatsAppMessage(phone, 
-        'Upload failed. Please try again.',
+        'Failed to process your CV. Please try again.',
         { instant: true }
       );
     }
   }
 
-  async saveFileToUploads(phone, file) {
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      
-      const uploadsDir = path.join(__dirname, '../uploads');
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-
-      const timestamp = Date.now();
-      const safePhone = phone.replace(/[^a-zA-Z0-9]/g, '_');
-      const extension = path.extname(file.originalname) || '.pdf';
-      const filename = `cv_${safePhone}_${timestamp}${extension}`;
-      const filepath = path.join(uploadsDir, filename);
-
-      fs.writeFileSync(filepath, file.buffer);
-      
-      logger.info('File saved to uploads directory', {
-        phone: phone.substring(0, 6) + '***',
-        filename: filename,
-        size: file.buffer.length,
-        path: filepath
-      });
-
-      return {
-        originalname: file.originalname,
-        mimetype: file.mimetype,
-        size: file.buffer.length,
-        filename: filename,
-        filepath: filepath,
-      };
-
-    } catch (error) {
-      logger.error('File save failed', { 
-        phone: phone.substring(0, 6) + '***',
-        error: error.message 
-      });
-      return null;
-    }
-  }
-
-    async sendInstantApplicationConfirmationWithCommunity(phone, jobs, context = {}) {
-    const usage = await this.checkDailyUsage(phone);
-    
-    let jobList = '';
-    jobs.slice(0, 5).forEach((job, index) => {
-      jobList += `${index + 1}. ${job.title} - ${job.company}\n`;
-    });
-    
-    if (jobs.length > 5) {
-      jobList += `...and ${jobs.length - 5} more jobs!\n`;
-    }
-    const response = `✅ SUCCESS! Professional Applications Sent!\n\n📨 Applied to ${jobs.length} jobs with custom cover letters:\n${jobList}\n\n🤖 What we sent to each recruiter:\n• Your CV\n• AI-generated cover letter for that specific job\n• Professional email formatting\n\n📧 Confirmation emails sent to you with copies of:\n• Each cover letter we generated\n• Your CV as submitted\n• Recruiter contact details\n\n✉️ Check your email now for full application copies.\n📞 Support: +2349049456183\n\n📊 Usage: ${Math.max(0, usage.remaining - jobs.length)}/3 applications remaining\n\n🌐 Share your success:\nhttps://whatsapp.com/channel/0029VbAp71RA89Mc5GPDKl1h\n\n🚀 Keep searching for more opportunities!`;
-
-    await this.sendWhatsAppMessage(phone, response, {
-      ...context,
-      messageType: 'processing',
-      urgency: 'high'
-    });
-  }
-
-    async queueSmartApplicationProcessing(phone, savedFile, jobs) {
-      try {
-        const applicationId = `app_${phone}_${Date.now()}`;
-        
-        const processedJobs = jobs.map(job => {
-          if (!job.email || job.email.trim() === '') {
-            if (job.company) {
-              const cleanCompany = job.company.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 10);
-              job.email = `hr@${cleanCompany}.com`;
-            } else {
-              job.email = 'jobs@company.ng';
-            }
-          }
-          return job;
-        });
-        
-        await applicationQueue.add(
-          'process-smart-applications',
-          {
-            identifier: phone,
-            file: {
-              originalname: savedFile.originalname,
-              mimetype: savedFile.mimetype,
-              size: savedFile.size,
-              filepath: savedFile.filepath,
-              filename: savedFile.filename
-            },
-            jobs: processedJobs,
-            applicationId: applicationId,
-            timestamp: Date.now(),
-            processingStrategy: 'file_path'
-          },
-          {
-            priority: 1,
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 2000 },
-            removeOnComplete: 30,
-            removeOnFail: 15
-          }
-        );
-  
-        logger.info('Smart application processing queued with file path', { 
-          phone: phone.substring(0, 6) + '***', 
-          applicationId, 
-          jobCount: processedJobs.length,
-          filepath: savedFile.filepath
-        });
-  
-      } catch (error) {
-        logger.error('Failed to queue smart applications', { phone, error: error.message });
-      }
-    }
-  
   // ================================
   // JOB APPLICATION HANDLING
   // ================================

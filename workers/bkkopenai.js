@@ -18,7 +18,7 @@ const PROVIDER_CONFIG = {
     model: 'Qwen/Qwen3-235B-A22B-Instruct-2507-tput', // $0.28/M tokens - 10M context, excellent performance
     maxTokens: 800, // Reduced for cost control
     temperature: 0.6, // Lower for more consistent JSON
-    timeout: 90000  // CRITICAL: Reduced from 10000 to 90000
+    timeout: 30000  // CRITICAL: Reduced from 10000 to 8000
   },
   [AI_PROVIDERS.MISTRAL]: {
     url: 'https://api.mistral.ai/v1/chat/completions',
@@ -26,7 +26,7 @@ const PROVIDER_CONFIG = {
     model: 'mistral-small', // Fallback option
     maxTokens: 800,
     temperature: 0.6,
-    timeout: 90000  // CRITICAL: Reduced from 12000 to 10000
+    timeout: 30000  // CRITICAL: Reduced from 12000 to 10000
   }
 };
 
@@ -697,258 +697,8 @@ Return valid JSON only.`;
 );
 
 // Add the helper functions after the worker definition
-function extractUserInfoTraditional(cvText, identifier) {
-  try {
-    const lines = cvText.split('\n').filter(line => line.trim());
-    let extractedName = '';
-    
-    // Look for name patterns anywhere in the document
-    const namePatterns = [
-      // Look for "Cynthia Igbonai Bakare" pattern
-      /([A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+)\s*Nationality:/i,
-      // Name before nationality
-      /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\s*(?:Nationality|Date of birth|Gender):/i,
-      // Name in structured format
-      /(?:Name|Full Name)[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})/i,
-      // Name at document start (original pattern)
-      /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})/m
-    ];
-    
-    for (const pattern of namePatterns) {
-      const match = cvText.match(pattern);
-      if (match && match[1]) {
-        const candidate = match[1].trim();
-        if (candidate !== 'ABOUT ME' && !candidate.includes('Experience')) {
-          extractedName = candidate;
-          break;
-        }
-      }
-    }
-    
-    // STRATEGY 2: Check first non-header lines
-    if (!extractedName) {
-      // Skip common headers and look for actual content
-      let startIndex = 0;
-      for (let i = 0; i < Math.min(10, lines.length); i++) {
-        const line = lines[i].toLowerCase();
-        if (line.includes('personal information') || 
-            line.includes('contact details') ||
-            line.includes('cv') || 
-            line.includes('resume')) {
-          startIndex = i + 1;
-          break;
-        }
-      }
-      
-      // Look at lines after headers
-      for (let i = startIndex; i < Math.min(startIndex + 5, lines.length); i++) {
-        const line = lines[i];
-        // Remove bullet points and clean
-        const cleaned = line.replace(/^[•\-\*]\s*/, '').trim();
-        
-        // Check if this looks like a name
-        const namePattern = /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})$/;
-        const match = cleaned.match(namePattern);
-        
-        if (match) {
-          const candidate = match[1];
-          // Exclude known non-names
-          const excludeTerms = ['Team Leadership', 'Team Leader', 'Project Manager', 
-                               'Skills', 'Experience', 'Education', 'Professional'];
-          
-          const isExcluded = excludeTerms.some(term => 
-            candidate.toLowerCase().includes(term.toLowerCase())
-          );
-          
-          if (!isExcluded) {
-            extractedName = candidate;
-            break;
-          }
-        }
-      }
-    }
-    
-    // STRATEGY 3: Look near email addresses (names often appear right before email)
-    if (!extractedName) {
-      const emailPattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*\n[•\-\*]?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
-      const match = cvText.match(emailPattern);
-      if (match && match[1]) {
-        const candidate = match[1].trim();
-        if (!candidate.toLowerCase().includes('team') && 
-            !candidate.toLowerCase().includes('leadership')) {
-          extractedName = candidate;
-        }
-      }
-    }
 
-    // Email extraction
-    const emailPattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
-    const emailMatches = cvText.match(emailPattern);
-    let extractedEmail = '';
-    
-    if (emailMatches) {
-      for (const email of emailMatches) {
-        if (!email.includes('example.com') && 
-            !email.includes('domain.com') &&
-            !email.includes('email.com') &&
-            !email.includes('test.com') &&
-            !email.includes('smartcvnaija.com')) {
-          extractedEmail = email;
-          break;
-        }
-      }
-    }
 
-    // Phone extraction
-    const phonePatterns = [
-      /(?:\+234|234|0)[\d\s-]{10,14}/g,
-      /(?:\+234|234)\s*\d{10}/g,
-      /0\d{10}/g
-    ];
-    
-    let extractedPhone = '';
-    for (const pattern of phonePatterns) {
-      const phoneMatch = cvText.match(pattern);
-      if (phoneMatch) {
-        extractedPhone = phoneMatch[0].trim();
-        break;
-      }
-    }
-
-    logger.info('Name extraction debug', {
-      identifier: identifier.substring(0, 6) + '***',
-      extractedName: extractedName || 'NOT FOUND',
-      extractedEmail: extractedEmail,
-      extractedPhone: extractedPhone,
-      firstFewLines: lines.slice(0, 5).join(' | ')
-    });
-
-    return {
-      name: extractedName,
-      email: extractedEmail,
-      phone: extractedPhone || identifier
-    };
-
-  } catch (error) {
-    logger.error('User info extraction failed', { 
-      identifier: identifier.substring(0, 6) + '***',
-      error: error.message 
-    });
-    return {
-      name: '',
-      email: '',
-      phone: identifier
-    };
-  }
-}
-function enhancedFallbackExtraction(cvText, identifier, regexData = {}, aiData = {}) {
-  logger.info('Performing enhanced fallback extraction', {
-    identifier: identifier.substring(0, 6) + '***',
-    hasRegex: !!regexData.name,
-    hasAI: !!aiData.name
-  });
-
-  const result = {
-    name: selectBestName(regexData.name, aiData.name, cvText),
-    email: selectBestEmail(regexData.email, aiData.email, cvText),
-    phone: selectBestPhone(regexData.phone, aiData.phone, identifier),
-    source: 'enhanced_fallback'
-  };
-
-  // Final validation and cleanup
-  if (!result.name) {
-    result.name = extractNameFromEmail(result.email) || extractNameFromText(cvText) || '';
-  }
-
-  logger.info('Enhanced fallback extraction completed', {
-    identifier: identifier.substring(0, 6) + '***',
-    finalName: result.name || 'NONE',
-    finalEmail: result.email || 'NONE',
-    source: result.source
-  });
-
-  return result;
-}
-
-function selectBestName(regex, ai, cvText) {
-  // ALWAYS prefer AI if it has a valid name
-  if (ai && ai.length >= 4 && ai.split(' ').length >= 2 && 
-      !ai.toLowerCase().includes('team') && 
-      !ai.toLowerCase().includes('leadership')) {
-    return ai;
-  }
-  
-  // Only use regex if AI completely failed
-  if (regex && regex.length >= 4 && 
-      !regex.toLowerCase().includes('team') && 
-      !regex.toLowerCase().includes('leadership')) {
-    return regex;
-  }
-  
-  // Last resort: try direct extraction
-  return extractNameFromText(cvText) || '';
-}
-
-function selectBestEmail(regex, ai, cvText) {
-  // Prefer AI if valid
-  if (ai && ai.includes('@') && ai.includes('.')) {
-    return ai;
-  }
-  
-  // Fallback to regex
-  if (regex && regex.includes('@')) {
-    return regex;
-  }
-  
-  return '';
-}
-
-function selectBestPhone(regex, ai, identifier) {
-  // Prefer AI if it looks like a proper phone number
-  if (ai && (ai.startsWith('+234') || ai.startsWith('0') || ai.startsWith('234'))) {
-    return ai;
-  }
-  
-  // Fallback to regex
-  if (regex && regex !== identifier) {
-    return regex;
-  }
-  
-  return identifier;
-}
-
-function extractNameFromEmail(email) {
-  if (!email || !email.includes('@')) return '';
-  
-  const prefix = email.split('@')[0];
-  // Simple name extraction for common patterns
-  if (prefix.includes('.')) {
-    return prefix.split('.').map(part => 
-      part.charAt(0).toUpperCase() + part.slice(1)
-    ).join(' ');
-  }
-  
-  return '';
-}
-
-function extractNameFromText(cvText) {
-  if (!cvText) return '';
-  
-  const lines = cvText.split('\n').slice(0, 10); // First 10 lines
-  
-  for (const line of lines) {
-    const words = line.trim().split(/\s+/);
-    if (words.length >= 2 && words.length <= 4) {
-      const potential = words.join(' ');
-      // Simple validation
-      if (potential.length >= 4 && /^[A-Za-z\s\-'.]+$/.test(potential)) {
-        return potential;
-      }
-    }
-  }
-  
-  return '';
-}
 // Helper function to clean and validate names
 function cleanAndValidateName(name) {
   if (!name || typeof name !== 'string') return '';
@@ -1034,7 +784,6 @@ function cleanAndValidatePhone(phone, identifier) {
   return identifier;
 }
 
-
 function parseJSON(raw, fallback = {}) {
   try {
     let cleaned = (raw || '').trim();
@@ -1051,20 +800,12 @@ function parseJSON(raw, fallback = {}) {
       cleaned += '}';
     }
     
-    const parsed = JSON.parse(cleaned);
-    
-    // FIXED: For user info extraction, check for name/email fields
-    if (parsed.name !== undefined || parsed.email !== undefined || parsed.confidence !== undefined) {
-      return parsed; // Valid user info response
-    }
-    
-    return parsed;
+    return JSON.parse(cleaned);
     
   } catch (err) {
     logger.error('JSON parse failed', { 
       raw: (raw || '').substring(0, 200), 
-      error: err.message,
-      rawLength: (raw || '').length
+      error: err.message
     });
     return fallback;
   }
@@ -1298,6 +1039,67 @@ function generateContextAwareFallback(message, conversationHistory) {
   };
 }
 
+
+// Helper functions
+function parseJSON(raw, fallback = {}) {
+  try {
+    let cleaned = (raw || '').trim();
+    
+    // Remove code block markers
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+    
+    // ADDED: Handle truncated JSON by attempting to complete it
+    if (!cleaned.endsWith('}')) {
+      // Try to find the last complete field
+      const lastCommaIndex = cleaned.lastIndexOf(',');
+      const lastCompleteField = cleaned.lastIndexOf('"', lastCommaIndex);
+      
+      if (lastCompleteField > 0) {
+        // Truncate to last complete field and close JSON
+        cleaned = cleaned.substring(0, lastCompleteField) + '}';
+      } else {
+        // Fallback: add closing brace
+        cleaned += '}';
+      }
+    }
+    
+    const parsed = JSON.parse(cleaned);
+    
+    // ADDED: Validate required fields exist
+    const requiredFields = ['overall_score', 'job_match_score', 'skills_score', 'experience_score', 'education_score'];
+    const hasAllFields = requiredFields.every(field => typeof parsed[field] === 'number');
+    
+    if (!hasAllFields) {
+      throw new Error('Missing required fields in JSON response');
+    }
+    
+    return parsed;
+    
+  } catch (err) {
+    logger.error('JSON parse failed', { 
+      raw: (raw || '').substring(0, 200), 
+      error: err.message,
+      rawLength: (raw || '').length
+    });
+    return fallback;
+  }
+}
+
+function performBasicCVAnalysis(cvText, jobTitle) {
+  return {
+    overall_score: 75,
+    job_match_score: 70,
+    skills_score: 80,
+    experience_score: 65,
+    education_score: 70,
+    experience_years: 3,
+    summary: 'Good professional background'
+  };
+}
 
 function getPersonalizedFallbackCoverLetter(cvText, jobTitle, companyName, applicantName = '[Your Name]') {
   // Extract information from CV text

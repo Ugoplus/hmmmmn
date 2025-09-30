@@ -13,7 +13,7 @@ async initializePayment(identifier, reference, email) {
         amount: config.get('paystack.amount'),
         reference,
         // ✅ CHANGED: Point to success page, not webhook
-        callback_url: `${config.get('baseUrl')}/payment/success?ref=${reference}`
+        callback_url: `https://www.smartcvnaija.com.ng/payment-success.html`
       },
       {
         headers: {

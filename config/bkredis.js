@@ -10,8 +10,7 @@ const redisConfig = {
   maxRetriesPerRequest: null, // Required for BullMQ
   enableReadyCheck: false,
   enableOfflineQueue: true,
-  commandTimeout: 60000,
-  connectTimeout: 60000,
+  commandTimeout: 10000,
   lazyConnect: true,
   keepAlive: 30000,
   family: 4
