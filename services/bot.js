@@ -2214,13 +2214,48 @@ async updateSessionContext(phone, message, intent, currentContext) {
   }
 }
 
+// services/bot.js - Replace your processIntent method with this enhanced version
+
 async processIntent(phone, intent, originalMessage, sessionContext = {}) {
   try {
     switch (intent?.action) {
+      
+      // NEW: Handle service information questions
+      case 'about_service':
+        logger.info('Handling service information request', {
+          phone: phone.substring(0, 6) + '***',
+          response: intent.response
+        });
+        
+        // Send the AI's natural explanation
+        await this.sendWhatsAppMessage(phone, intent.response, { instant: true });
+        
+        // Optional: Follow up with quick action prompt after 2 seconds
+        setTimeout(async () => {
+          await this.sendWhatsAppMessage(phone,
+            'Ready to search for jobs? Just tell me what work you\'re looking for!',
+            { instant: true }
+          );
+        }, 2000);
+        
+        return true;
+      
+      // NEW: Handle casual chat/greetings
+      case 'chat':
+      case 'greeting':
+        logger.info('Handling casual conversation', {
+          phone: phone.substring(0, 6) + '***',
+          response: intent.response
+        });
+        
+        return this.sendWhatsAppMessage(phone, intent.response, { instant: true });
+      
+      // EXISTING: Job search with complete filters
       case 'search_jobs':
         if (intent.filters && (intent.filters.title || intent.filters.location || intent.filters.remote)) {
           const filters = { ...intent.filters };
           
+          // Fill missing data from session if available
           if (!filters.title && sessionContext.lastJobType) {
             filters.title = sessionContext.lastJobType;
             filters.rawTitle = sessionContext.lastRawTitle || sessionContext.lastJobType;
@@ -2233,6 +2268,7 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             logger.info('Completed query with session location', { phone, location: filters.location });
           }
 
+          // Store to Redis for future reference
           if (filters.title) {
             await redis.set(`lastJobType:${normalizePhone(phone)}`, filters.title, 'EX', 3600);
           }
@@ -2240,21 +2276,23 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             await redis.set(`lastLocation:${normalizePhone(phone)}`, filters.location, 'EX', 3600);
           }
 
-          // Use the correct display title using bkopenai.js logic
           const displayTitle = this.getCorrectJobDisplayTitle(filters);
           const responseMessage = intent.response || `Searching for ${displayTitle}...`;
           
           await this.sendWhatsAppMessage(phone, responseMessage, { instant: true });
           return await this.searchJobs(phone, filters);
         }
+        
+        // If no complete filters, ask for clarification
         return this.sendWhatsAppMessage(phone, 
           'What type of jobs are you looking for?\n\nTry: "developer jobs in Lagos" or "remote marketing jobs"\n\nOr type "menu" to browse categories',
           { instant: true }
         );
 
+      // EXISTING: Clarification requests
       case 'clarify':
         try {
-          // persist any freshly-detected bits to Redis (keep existing behaviour)
+          // Store any detected info to Redis
           if (intent.filters?.title) {
             await redis.set(`lastJobType:${normalizePhone(phone)}`, intent.filters.title, 'EX', 3600);
             logger.info('Clarify: Stored job type to Redis', {
@@ -2271,7 +2309,7 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             });
           }
 
-          logger.info('Clarify handler enter using bkopenai.js logic', {
+          logger.info('Clarify handler enter', {
             phone: phone.substring(0, 6) + '***',
             originalMessage: originalMessage,
             intentFilters: intent.filters || null,
@@ -2281,9 +2319,9 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             sessionPendingLocation: sessionContext?.pendingLocation || null
           });
 
-          // NEW FIX: Handle when BOTH job and location are detected in current message
+          // Handle when BOTH job and location detected in same message
           if (intent.filters?.title && intent.filters?.location) {
-            logger.info('Clarify: Both job and location detected in single message - searching immediately', {
+            logger.info('Clarify: Both detected - searching immediately', {
               phone: phone.substring(0, 6) + '***',
               detectedJob: intent.filters.title,
               detectedLocation: intent.filters.location,
@@ -2304,27 +2342,26 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             return await this.searchJobs(phone, filters);
           }
 
-          // STEP 1: user gave a job but no location -> save pendingJobType and ask for location
+          // Job detected, no location - save pending
           if (intent.filters?.title && !intent.filters?.location) {
-            logger.info('Clarify Step 1: Job detected, no location - saving to pending', {
+            logger.info('Clarify: Job detected, saving to pending', {
               phone: phone.substring(0, 6) + '***',
-              detectedJob: intent.filters.title,
-              detectedRawTitle: intent.filters.rawTitle,
-              detectedFriendlyLabel: intent.filters.friendlyLabel
+              detectedJob: intent.filters.title
             });
             
             sessionContext.pendingJobType = intent.filters.title;
             sessionContext.pendingRawTitle = intent.filters.rawTitle;
             sessionContext.pendingFriendlyLabel = intent.filters.friendlyLabel;
             
-            return this.sendWhatsAppMessage(phone, `What location for ${intent.filters.friendlyLabel || intent.filters.title}? Try: Lagos, Abuja, or Remote`,
+            return this.sendWhatsAppMessage(phone, 
+              `What location for ${intent.filters.friendlyLabel || intent.filters.title}? Try: Lagos, Abuja, or Remote`,
               { instant: true }
             );
           }
 
-          // STEP 2: user gave a location but no job -> save pendingLocation and ask for job
+          // Location detected, no job - save pending
           if (intent.filters?.location && !intent.filters?.title) {
-            logger.info('Clarify Step 2: Location detected, no job - saving to pending', {
+            logger.info('Clarify: Location detected, saving to pending', {
               phone: phone.substring(0, 6) + '***',
               detectedLocation: intent.filters.location
             });
@@ -2338,19 +2375,9 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             );
           }
 
-          // STEP 3: if we have a pending piece and the user supplied the missing one -> combine & search
+          // Check for pending combinations
           const hasPendingJob = !!sessionContext.pendingJobType;
           const hasPendingLocation = !!sessionContext.pendingLocation;
-          
-          logger.info('Clarify Step 3: Checking for pending combinations', {
-            phone: phone.substring(0, 6) + '***',
-            hasPendingJob: hasPendingJob,
-            hasPendingLocation: hasPendingLocation,
-            pendingJobType: sessionContext.pendingJobType,
-            pendingLocation: sessionContext.pendingLocation,
-            intentLocation: intent.filters?.location,
-            intentJobTitle: intent.filters?.title
-          });
           
           if ((intent.filters?.location && hasPendingJob) || (intent.filters?.title && hasPendingLocation)) {
             const jobType = intent.filters?.title || sessionContext.pendingJobType;
@@ -2358,16 +2385,15 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             const rawTitle = intent.filters?.rawTitle || sessionContext.pendingRawTitle || jobType;
             const friendlyLabel = intent.filters?.friendlyLabel || sessionContext.pendingFriendlyLabel || jobType;
 
-            logger.info('Clarify Step 3: Combining pending + current', { 
+            logger.info('Clarify: Combining pending + current', { 
               phone: phone.substring(0, 6) + '***',
               finalJobType: jobType, 
               finalLocation: jobLocation,
               finalRawTitle: rawTitle,
-              finalFriendlyLabel: friendlyLabel,
-              source: intent.filters?.location && hasPendingJob ? 'pending_job + new_location' : 'pending_location + new_job'
+              finalFriendlyLabel: friendlyLabel
             });
 
-            // clear pending after use
+            // Clear pending
             sessionContext.pendingJobType = null;
             sessionContext.pendingLocation = null;
             sessionContext.pendingRawTitle = null;
@@ -2386,50 +2412,57 @@ async processIntent(phone, intent, originalMessage, sessionContext = {}) {
             return await this.searchJobs(phone, filters);
           }
 
-          // STEP 4: normal fallback (no pending, no combinable data)
-          logger.info('Clarify Step 4: Using fallback reply', { 
+          // Fallback - use AI's response
+          logger.info('Clarify: Using fallback reply', { 
             phone: phone.substring(0, 6) + '***',
             response: intent.response 
           });
           return this.sendWhatsAppMessage(phone, intent.response, { instant: true });
 
         } catch (err) {
-          logger.error('Clarify handler error', { phone: phone.substring(0, 6) + '***', error: err.message });
+          logger.error('Clarify handler error', { 
+            phone: phone.substring(0, 6) + '***', 
+            error: err.message 
+          });
           return this.sendWhatsAppMessage(phone, intent.response, { instant: true });
         }
 
+      // EXISTING: Location-only detection
       case 'search_location':
-        // Handle location-only detection - redirect to clarify logic
-        logger.info('Redirecting search_location to clarify handler', { 
-          phone: phone.substring(0, 6) + '***',
-          originalAction: 'search_location' 
+        logger.info('Redirecting search_location to clarify', { 
+          phone: phone.substring(0, 6) + '***' 
         });
-        
-        // Change the action to clarify and reprocess
         intent.action = 'clarify';
         return await this.processIntent(phone, intent, originalMessage, sessionContext);
 
+      // EXISTING: Show jobs
       case 'show_jobs':
         return await this.showFullJobsAfterPaymentWithInteractive(phone);
 
+      // EXISTING: Status check
       case 'status':
         return await this.handleStatusRequest(phone);
 
+      // EXISTING: Show menu
       case 'show_menu':
         return await this.showJobCategoriesMenuInteractive(phone);
 
+      // EXISTING: Apply to job
       case 'apply_job':
         await redis.set(`state:${normalizePhone(phone)}`, 'selecting_jobs', 'EX', 3600);
         return await this.handleJobSelection(phone, originalMessage);
 
+      // EXISTING: Help
       case 'help':
         return this.sendWhatsAppMessage(phone, this.getHelpMessage());
 
+      // FALLBACK: Unknown action
       default:
-        logger.info('Falling back to simple patterns for unhandled intent', { 
+        logger.info('Unknown action, using simple patterns', { 
           phone: phone.substring(0, 6) + '***', 
           action: intent.action 
         });
+        
         const simpleResponse = this.handleSimplePatterns(phone, originalMessage, sessionContext);
         if (simpleResponse) {
           return simpleResponse;

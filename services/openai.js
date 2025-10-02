@@ -1072,137 +1072,98 @@ detectJobTypeFromMessage(text) {
   }
 
   // ENHANCED: parseSmartPatterns with better detection and user-friendly responses
-  parseSmartPatternsEnhanced(message, userContext = null) {
-    const text = message.toLowerCase().trim();
-    
-    // Extract session data
-    const sessionData = userContext?.sessionData || {};
-    
-    // Enhanced job type detection
-    const jobDetection = this.detectJobTypeFromMessage(text);
-    let detectedJob = null;
-    let rawTitle = null;
-    let friendlyJobLabel = null;
-    
-    if (jobDetection) {
-      detectedJob = jobDetection.category;
-      rawTitle = jobDetection.rawTitle;
-      friendlyJobLabel = this.jobLabels[detectedJob] || rawTitle;
-    }
+ // services/openai.js - MINIMAL pattern matching section only
+// Replace your parseSmartPatternsEnhanced method with this:
 
-    // Enhanced location detection (existing logic)
-    let detectedLocation = null;
-    let isRemote = false;
-
-    for (const [key, value] of Object.entries(this.locations)) {
-      if (text.includes(key)) {
-        detectedLocation = value;
-        if (key === 'remote') {
-          isRemote = true;
-        }
-        break;
-      }
-    }
-
-    // Handle complete queries (both job and location found)
-    if (detectedJob && detectedLocation) {
-      const searchPhrase = this.getRandomSearchPhrase(friendlyJobLabel, detectedLocation);
-      
-      return {
-        action: 'search_jobs',
-        response: searchPhrase,
-        filters: {
-          title: detectedJob,
-          rawTitle: rawTitle,
-          friendlyLabel: friendlyJobLabel,
-          location: detectedLocation,
-          remote: isRemote
-        }
-      };
-    }
-    
-    // Handle partial queries with session context
-    if (detectedJob && !detectedLocation && sessionData.lastLocation) {
-      const searchPhrase = this.getRandomSearchPhrase(friendlyJobLabel, sessionData.lastLocation);
-      
-      return {
-        action: 'search_jobs',
-        response: searchPhrase,
-        filters: {
-          title: detectedJob,
-          rawTitle: rawTitle,
-          friendlyLabel: friendlyJobLabel,
-          location: sessionData.lastLocation,
-          remote: sessionData.lastLocation.toLowerCase() === 'remote'
-        }
-      };
-    }
-    
-    if (detectedLocation && !detectedJob && sessionData.lastJobType) {
-      const lastFriendlyLabel = this.jobLabels[sessionData.lastJobType] || sessionData.lastJobType;
-      const searchPhrase = this.getRandomSearchPhrase(lastFriendlyLabel, detectedLocation);
-      
-      return {
-        action: 'search_jobs',
-        response: searchPhrase,
-        filters: {
-          title: sessionData.lastJobType,
-          rawTitle: sessionData.lastJobType,
-          friendlyLabel: lastFriendlyLabel,
-          location: detectedLocation,
-          remote: isRemote
-        }
-      };
-    }
-    
-    // Handle job search keywords without specific job/location
-    if (text.includes('job') || text.includes('work') || text.includes('find')) {
-      if (detectedJob && !detectedLocation) {
-        return {
-          action: 'clarify',
-          response: `What location for ${friendlyJobLabel} jobs? Try: Lagos, Abuja, or Remote`,
-          filters: { 
-            title: detectedJob,
-            rawTitle: rawTitle,
-            friendlyLabel: friendlyJobLabel
-          }
-        };
-      }
-      
-      if (detectedLocation && !detectedJob) {
-        return {
-          action: 'clarify',
-          response: `What type of jobs in ${detectedLocation}? Try: Developer, Sales & Marketing, or Accounting jobs`,
-          filters: { location: detectedLocation, remote: isRemote }
-        };
-      }
-      
-      // General job search request
-      return {
-        action: 'clarify',
-        response: 'What type of jobs are you looking for?\n\n• "developer jobs in Lagos"\n• "remote sales jobs"\n• "accounting jobs in Abuja"'
-      };
-    }
-    
-    // Handle greetings
-    if (text.includes('hello') || text.includes('hi') || text.includes('hey')) {
-      return {
-        action: 'greeting',
-        response: 'Hello! I help you find jobs in Nigeria 🇳🇬\n\nTry: "Find developer jobs in Lagos" or "help" for commands'
-      };
-    }
-    
-    // Handle help requests
-    if (text.includes('help') || text.includes('command')) {
-      return {
-        action: 'help',
-        response: this.getHelpMessage()
-      };
-    }
-    
-    return null;
+parseSmartPatternsEnhanced(message, userContext = null) {
+  const text = message.toLowerCase().trim();
+  
+  // Extract session data
+  const sessionData = userContext?.sessionData || {};
+  
+  // ONLY HANDLE EXACT COMMANDS - Let AI handle everything else
+  
+  // 1. Exact "menu" command
+  if (text === 'menu' || text === 'categories') {
+    return {
+      action: 'show_menu',
+      response: 'Opening job categories menu...'
+    };
   }
-
+  
+  // 2. Exact "status" command
+  if (text === 'status') {
+    return {
+      action: 'status',
+      response: 'Checking your status...'
+    };
+  }
+  
+  // 3. Exact "help" command
+  if (text === 'help') {
+    return {
+      action: 'help',
+      response: this.getHelpMessage()
+    };
+  }
+  
+  // 4. Show jobs command (multiple variations)
+  const showJobsPatterns = [
+    /^show\s*(job|jobs|jobz)$/i,
+    /^(job|jobs|jobz)$/i,
+    /^see\s*(job|jobs)$/i,
+    /^view\s*(job|jobs)$/i,
+    /^display\s*(job|jobs)$/i
+  ];
+  
+  if (showJobsPatterns.some(pattern => pattern.test(text))) {
+    return {
+      action: 'show_jobs',
+      response: 'Loading your jobs...'
+    };
+  }
+  
+  // 5. Apply patterns (exact job numbers or "all")
+  if (/^apply\s+(\d+([,\s]+\d+)*|all)$/i.test(text) || 
+      /^\d+([,\s]+\d+)*$/.test(text) ||
+      /^(apply\s+)?all$/i.test(text)) {
+    return {
+      action: 'apply_job',
+      response: 'Processing application...'
+    };
+  }
+  
+  // 6. CRITICAL: Job + Location detection (ONLY when BOTH are present)
+  const jobDetection = this.detectJobTypeFromMessage(text);
+  let detectedLocation = null;
+  
+  for (const [key, value] of Object.entries(this.locations)) {
+    if (text.includes(key)) {
+      detectedLocation = value;
+      break;
+    }
+  }
+  
+  // ONLY return search_jobs if BOTH job AND location are clearly present
+  if (jobDetection && detectedLocation) {
+    const friendlyLabel = this.jobLabels[jobDetection.category] || jobDetection.rawTitle;
+    
+    return {
+      action: 'search_jobs',
+      response: this.getRandomSearchPhrase(friendlyLabel, detectedLocation),
+      filters: {
+        title: jobDetection.category,
+        rawTitle: jobDetection.rawTitle,
+        friendlyLabel: friendlyLabel,
+        location: detectedLocation,
+        remote: detectedLocation.toLowerCase() === 'remote'
+      }
+    };
+  }
+  
+  // EVERYTHING ELSE goes to AI (including questions, partial queries, greetings)
+  return null;
+}
   // Your existing methods remain unchanged...
   async parseWithAI(message, identifier, userContext = null) {
     try {

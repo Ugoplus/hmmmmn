@@ -303,69 +303,126 @@ const worker = new Worker(
         const conversationHistory = await getConversationHistory(userId);
 
         // Enhanced system prompt with Nigerian context
-        const systemPrompt = `You are SmartCVNaija, a helpful Nigerian job search assistant with MEMORY.
-You understand Nigerian slang, Pidgin English, and local expressions.
+// workers/openai.js - Replace the systemPrompt in parse-query handler
 
-CONVERSATION CONTEXT:
-- Remember what the user said in previous messages, including slang or Pidgin.
-- If they mentioned a job type or location before, remember it.
-- Build on the conversation naturally, responding in a friendly Nigerian tone.
+// Inside the parse-query handler, replace the systemPrompt with this:
+
+// workers/openai.js - Replace the systemPrompt in parse-query handler
+
+// Inside the parse-query handler, replace the systemPrompt with this:
+
+const systemPrompt = `You are SmartCVNaija, a helpful Nigerian job search assistant.
 
 PERSONALITY:
-- Friendly, conversational, and familiar with Nigerian culture.
-- Remember context and don't ask repeated questions.
-- Be brief (max 40 words) but helpful.
-- Use appropriate Nigerian expressions when natural.
+- Friendly, conversational Nigerian tone
+- Answer questions about the service naturally
+- Build rapport before pushing transactions
+- Use simple language, max 50 words per response
+- Be patient with exploratory questions
 
 MAIN CAPABILITIES:
-1. Job search across all 36 Nigerian states + FCT
-2. CV upload and processing
-3. Job applications (₦500 for 10 daily applications)
-4. Natural conversation with memory
+1. Job search across 36 Nigerian states + FCT
+2. CV upload and processing  
+3. Auto-apply service (₦1,000 for 30 days)
+4. Natural conversation about the service
 
-IMPORTANT CONVERSATION RULES:
-- If user said "developer jobs" before and now says "Lagos", combine them → search developer jobs in Lagos
-- If user said "Lagos" before and now says "marketing", combine them → search marketing jobs in Lagos  
-- Don't ask "what job?" if they mentioned it in recent messages
-- Don't ask "where?" if they mentioned location in recent messages
+SERVICE INFORMATION (for when users ask questions):
+- SmartCVNaija helps Nigerians find jobs and apply automatically
+- We search thousands of jobs across all states and cities
+- Users pay ₦1,000 for 30-day auto-apply service
+- AI automatically applies to matching jobs daily with custom cover letters
+- Users get daily email reports of applications
+- Process: Search (free) → Pay ₦1,000 → Upload CV → AI auto-applies for 30 days
+- Available 24/7 via WhatsApp
 
-JOB CATEGORIES (use these exact values for filters.title):
-- engineering_technical (for developer, programmer, engineer, IT, software)
-- marketing_sales (for sales, marketing, business development)
-- accounting_finance (for accountant, finance, audit, bookkeeper)
-- healthcare_medical (for nurse, doctor, medical, healthcare)
-- education_training (for teacher, trainer, instructor, tutor)
-- admin_office (for admin, secretary, clerk, office assistant)
-- management_executive (for manager, supervisor, director, executive)
-- customer_service (for customer service, support, call center)
-- human_resources (for HR, recruiter, talent, personnel)
-- logistics_supply (for logistics, warehouse, supply chain)
-- transport_driving (for driver, transport, delivery, courier)
-- security_safety (for security, guard, safety, surveillance)
-- other_general (for general jobs, entry level, graduate)
+RESPONSE TYPES:
 
-RESPONSE FORMAT - Return JSON:
+1. **Service Questions** (about_service action):
+   - "What is this?" → Explain briefly: "SmartCVNaija helps you find jobs and auto-applies for you across Nigeria"
+   - "How does it work?" → Explain process: "Search jobs → Pay ₦1,000 → Upload CV → AI auto-applies daily for 30 days with custom cover letters"
+   - "What's the cost?" → "₦1,000 for 30-day auto-apply service with AI cover letters and daily email reports"
+   - "Is it legit?" → Reassure: "Yes! We help 100+ Nigerians daily with automated applications. Check our channel for testimonials"
+
+2. **Casual Chat** (chat action):
+   - Greetings: "Hello! I help Nigerians find jobs. What type of work interests you?"
+   - Small talk: Keep brief, redirect to service
+   - Random questions: Answer if simple, otherwise redirect
+
+3. **Job Search** (search_jobs action):
+   - When user mentions BOTH job type AND location
+   - Examples: "developer jobs in Lagos", "remote marketing jobs"
+   - Return filters: {title: "category", location: "State", remote: true/false}
+
+4. **Clarification** (clarify action):
+   - When user mentions ONLY job type: "What location? Lagos, Abuja, or Remote?"
+   - When user mentions ONLY location: "What type of jobs? Developer, Sales, Accounting?"
+
+JOB CATEGORIES (use exact values for filters.title):
+- engineering_technical (developer, programmer, IT, software)
+- marketing_sales (sales, marketing, business development)
+- accounting_finance (accountant, finance, audit)
+- healthcare_medical (nurse, doctor, medical)
+- education_training (teacher, trainer, tutor)
+- admin_office (admin, secretary, clerk)
+- management_executive (manager, supervisor, director)
+- customer_service (customer service, support)
+- human_resources (HR, recruiter, talent)
+- logistics_supply (logistics, warehouse)
+- transport_driving (driver, transport, delivery)
+- security_safety (security, guard, safety)
+- other_general (general jobs, entry level)
+
+CRITICAL RULES:
+1. For service questions → Use "about_service" action
+2. For casual chat → Use "chat" action  
+3. For job searches → Use "search_jobs" action ONLY when BOTH job + location present
+4. For partial info → Use "clarify" action
+5. Keep responses under 50 words
+6. Be natural and conversational
+7. ONLY answer questions about SmartCVNaija job search service - politely redirect other topics
+
+OFF-TOPIC HANDLING:
+If user asks about topics unrelated to jobs/SmartCVNaija (politics, news, general knowledge, etc.):
 {
-  "action": "search_jobs|apply_job|upload_cv|get_payment|clarify|chat|help",
-  "response": "your natural response using appropriate tone",
-  "filters": {"title": "job_category_from_above", "location": "State_Name", "remote": true/false},
-  "extractedInfo": {"jobType": "detected_job", "location": "detected_location"}
+  "action": "chat",
+  "response": "I focus on helping Nigerians find jobs. What type of work are you looking for?"
+}
+
+RESPONSE FORMAT (JSON):
+{
+  "action": "about_service|chat|search_jobs|clarify|help",
+  "response": "your friendly response here",
+  "filters": {"title": "category", "location": "State", "remote": false}
 }
 
 EXAMPLES:
-- User: "I want developer work for Lagos" →
-  {
-    "action": "search_jobs",
-    "response": "Searching for developer jobs in Lagos now...",
-    "filters": {"title": "engineering_technical", "location": "Lagos", "remote": false}
-  }
-- User: "How far?" →
-  {
-    "action": "chat",
-    "response": "I dey o! Wetin you want make I do for you today?"
-  }
 
-Remember: Use conversation history to provide smart, contextual responses!`;
+User: "What is smartcvnaija?"
+{
+  "action": "about_service",
+  "response": "SmartCVNaija helps Nigerians find jobs automatically! Pay ₦1,000 for 30 days - AI applies to matching jobs daily with custom cover letters. Want to try?"
+}
+
+User: "How far?"
+{
+  "action": "chat",
+  "response": "I dey o! I help people find jobs in Nigeria. What type of work you dey find?"
+}
+
+User: "developer jobs in Lagos"
+{
+  "action": "search_jobs",
+  "response": "Searching for developer jobs in Lagos...",
+  "filters": {"title": "engineering_technical", "location": "Lagos", "remote": false}
+}
+
+User: "I need accounting jobs"
+{
+  "action": "clarify",
+  "response": "Nice! Where you wan work? Lagos, Abuja, or remote?"
+}
+
+Remember: Build trust through conversation, explain the 30-day auto-apply service naturally!`;
 
         // Build conversation messages with history
         const conversationMessages = [
@@ -433,6 +490,172 @@ Remember: Use conversation history to provide smart, contextual responses!`;
         return result;
 
       } 
+      else if (job.name === 'expand-query') {
+  const { userQuery, jobCategory } = job.data;
+  
+  logger.info('Expanding query with AI', { userQuery, jobCategory });
+  
+  try {
+    const systemPrompt = `You are an expert at understanding job search intent and expanding queries for better matching.
+
+Given a user's job search query, generate:
+1. must_include: Core keywords that MUST be in job listings (3-6 terms)
+2. must_exclude: Terms that indicate wrong job types (2-4 terms)
+3. related_terms: Related skills/terms that boost relevance (3-5 terms)
+
+Example:
+Input: "React developer jobs"
+Output: {
+  "must_include": ["react", "frontend", "javascript", "web developer"],
+  "must_exclude": ["java developer", "python developer", "backend only"],
+  "related_terms": ["typescript", "next.js", "vue", "redux"]
+}
+
+Rules:
+- Be specific but not too narrow
+- Exclude terms that indicate completely different job types
+- Related terms should be genuinely related technologies/skills
+- Consider Nigerian job market context
+
+Return ONLY valid JSON.`;
+
+    const userPrompt = `Expand this job search query: "${userQuery}"${jobCategory ? `\nJob Category: ${jobCategory}` : ''}`;
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ];
+
+    const aiResponse = await callAIWithContext(messages, null, {
+      maxTokens: 300,
+      temperature: 0.4
+    });
+
+    const expansion = parseJSON(aiResponse.content, {});
+
+    // Validate response
+    if (!expansion.must_include || !Array.isArray(expansion.must_include)) {
+      throw new Error('Invalid expansion format');
+    }
+
+    logger.info('Query expansion successful', {
+      userQuery,
+      mustIncludeCount: expansion.must_include.length,
+      mustExcludeCount: expansion.must_exclude?.length || 0
+    });
+
+    return {
+      must_include: expansion.must_include,
+      must_exclude: expansion.must_exclude || [],
+      related_terms: expansion.related_terms || [],
+      confidence: 0.9
+    };
+
+  } catch (error) {
+    logger.error('Query expansion failed', {
+      userQuery,
+      error: error.message
+    });
+    
+    // Return basic fallback
+    return {
+      must_include: [userQuery.toLowerCase()],
+      must_exclude: [],
+      related_terms: [],
+      confidence: 0.5
+    };
+  }
+}
+
+// ============================================
+// NEW JOB TYPE 2: ATS Analysis
+// ============================================
+else if (job.name === 'ats-analysis') {
+  const { cvText, jobTitle, jobDescription, jobRequirements, jobExperience, jobCategory } = job.data;
+  
+  logger.info('Performing ATS analysis', { jobTitle, jobCategory });
+  
+  try {
+    const systemPrompt = `You are an ATS (Applicant Tracking System) expert analyzing CV compatibility with job requirements.
+
+Analyze the CV against the job and provide:
+1. matched_keywords: Keywords found in both CV and job (array of strings)
+2. missing_keywords: Required keywords missing from CV (array of strings)
+3. skill_match_score: 0-100 score for skills alignment
+4. experience_match_score: 0-100 score for experience level match
+5. education_match_score: 0-100 score for education match
+6. strengths: What's strong in the CV for this job (array of strings, max 3)
+7. weaknesses: What's missing or weak (array of strings, max 3)
+8. recommendations: How to improve CV (array of strings, max 3)
+
+Be objective and practical. Consider Nigerian job market standards.
+
+Return ONLY valid JSON with all fields.`;
+
+    const jobInfo = `
+Job Title: ${jobTitle}
+Category: ${jobCategory || 'Not specified'}
+Description: ${jobDescription ? jobDescription.substring(0, 500) : 'Not provided'}
+Requirements: ${jobRequirements ? jobRequirements.substring(0, 500) : 'Not provided'}
+Experience: ${jobExperience || 'Not specified'}
+`;
+
+    const cvInfo = `CV Content (first 2000 chars): ${cvText.substring(0, 2000)}`;
+
+    const userPrompt = `${jobInfo}\n\n${cvInfo}\n\nAnalyze CV compatibility and return JSON.`;
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ];
+
+    const aiResponse = await callAIWithContext(messages, null, {
+      maxTokens: 800,
+      temperature: 0.3
+    });
+
+    const analysis = parseJSON(aiResponse.content, {});
+
+    // Validate and set defaults
+    const result = {
+      matched_keywords: analysis.matched_keywords || [],
+      missing_keywords: analysis.missing_keywords || [],
+      skill_match_score: analysis.skill_match_score || 50,
+      experience_match_score: analysis.experience_match_score || 50,
+      education_match_score: analysis.education_match_score || 50,
+      strengths: analysis.strengths || ['CV submitted'],
+      weaknesses: analysis.weaknesses || ['Further analysis needed'],
+      recommendations: analysis.recommendations || ['Review job description carefully']
+    };
+
+    logger.info('ATS analysis complete', {
+      jobTitle,
+      skillScore: result.skill_match_score,
+      matchedCount: result.matched_keywords.length
+    });
+
+    return result;
+
+  } catch (error) {
+    logger.error('ATS analysis failed', {
+      jobTitle,
+      error: error.message
+    });
+    
+    // Return basic fallback analysis
+    return {
+      matched_keywords: [],
+      missing_keywords: [],
+      skill_match_score: 50,
+      experience_match_score: 50,
+      education_match_score: 50,
+      strengths: ['CV submitted for review'],
+      weaknesses: ['Unable to perform detailed analysis'],
+      recommendations: ['Ensure CV is well-formatted and contains relevant keywords']
+    };
+  }
+}
+
       // Keep existing generate-cover-letter handler
       else if (job.name === 'generate-cover-letter') {
         const { cvText, jobTitle, companyName, applicantName = '[Your Name]' } = job.data;
